@@ -38,10 +38,14 @@ MAX_ROWS = 2000  # cap returned rows so the browser never chokes on 2.5M rows
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_PATH = os.path.join(BASE_DIR, "webapp_run.log")
-# A tqdm progress line, e.g. "Verifying:  40%|████  | 1112231/2762976 [..file/s]".
-# Matched by the "NN%|" percentage-bar signature so it's caught whether tqdm
-# overwrites with \r (tty-ish) or prints a fresh \n line per refresh (file).
-_TQDM_RE = re.compile(r"\d{1,3}%\|")
+# A tqdm progress line, in either shape: the percentage-bar form when the run
+# has a known total ("Verifying:  40%|████  | 1112231/2762976 [..file/s]") or
+# the total-less counter form a first scan emits ("Indexing [/]: 917601file
+# [3:55:20, 55.64file/s, /path]"). Both must land in the status `progress`
+# field — the UI's progress label and path strip read it — and be kept out of
+# the scrolling log. Caught whether tqdm overwrites with \r (tty-ish) or
+# prints a fresh \n line per refresh (file).
+_TQDM_RE = re.compile(r"\d{1,3}%\||\d+file \[")
 
 
 def get_excludes() -> dict:
