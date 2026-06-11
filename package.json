@@ -1,6 +1,6 @@
 {
   "name": "file-indexer",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Local file indexer desktop app",
   "main": "electron/main.js",
   "private": true,
