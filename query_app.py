@@ -57,14 +57,14 @@ def get_excludes() -> dict:
 
 
 def save_user_excludes(paths) -> dict:
-    """Write the user exclude list to crawler.EXCLUDE_CONFIG. Only absolute-path
-    strings are kept; built-in defaults are never touched. Returns the saved set
-    (or an error dict). This writes a plain JSON file of path prefixes — it does
-    not feed the fixed crawler COMMANDS, so the run path stays request-input-free."""
+    """Write the user exclude list to crawler.EXCLUDE_CONFIG. Only valid entries
+    are kept (absolute paths or anchored globs, per crawler.is_valid_exclude);
+    built-in defaults are never touched. Returns the saved set (or an error
+    dict). This writes a plain JSON file of patterns — it does not feed the fixed
+    crawler COMMANDS, so the run path stays request-input-free."""
     if not isinstance(paths, list):
         return {"error": "expected a list of paths"}
-    clean = sorted({p.strip() for p in paths
-                    if isinstance(p, str) and p.strip().startswith("/")})
+    clean = sorted({p.strip() for p in paths if crawler.is_valid_exclude(p)})
     try:
         with open(crawler.EXCLUDE_CONFIG, "w") as f:
             json.dump(clean, f, indent=2)
@@ -1229,13 +1229,17 @@ PAGE = """<!doctype html>
   <div id="exmodal-panel">
     <button type="button" class="modal-x" id="ex-x" title="Close" aria-label="Close">&#10005;</button>
     <h3>Crawler exclude list</h3>
-    <p class="ex-note">Files under these path prefixes are skipped by the crawler.
+    <p class="ex-note">Paths the crawler skips. An absolute path excludes that
+      folder and everything under it. A pattern with <code>*</code> (any text)
+      or <code>?</code> (one character) matches the whole path &mdash; add a
+      trailing <code>*</code> to catch a folder's contents, e.g.
+      <code>*/Library/Application&nbsp;Support/*</code>.
       Changes take effect on the <b>next</b> crawl, not retroactively.</p>
     <div><b>Built-in (always excluded)</b></div>
     <pre id="ex-defaults"></pre>
-    <div><b>Your excludes</b> &mdash; one absolute path per line:</div>
+    <div><b>Your excludes</b> &mdash; one path or pattern per line:</div>
     <textarea id="ex-user" spellcheck="false"
-      placeholder="/Volumes/SomeVolume&#10;/Volumes/Other/subdir"></textarea>
+      placeholder="/Volumes/SomeVolume&#10;*/Library/Application Support/*"></textarea>
     <div class="ex-btns">
       <button id="ex-save">Save</button>
       <button id="ex-cancel">Cancel</button>
@@ -2079,8 +2083,14 @@ document.getElementById('ex-cancel').onclick = () => { exModal.hidden = true; };
 document.getElementById('ex-x').onclick = () => { exModal.hidden = true; };
 document.getElementById('ex-save').onclick = async () => {
   const lines = exUser.value.split('\\n').map(s => s.trim()).filter(Boolean);
-  const bad = lines.filter(s => !s.startsWith('/'));
-  if (bad.length) { alert('Not absolute paths:\\n' + bad.join('\\n')); return; }
+  const valid = s => (s.startsWith('/') || s.includes('*') || s.includes('?'))
+    && [...s].some(c => c !== '*' && c !== '?' && c !== '/');
+  const bad = lines.filter(s => !valid(s));
+  if (bad.length) {
+    alert('Each line must be an absolute path or a glob with at least one '
+      + 'real character (a lone * is rejected):\\n' + bad.join('\\n'));
+    return;
+  }
   exMsg.textContent = 'Saving\\u2026';
   const d = await (await fetch('/api/excludes', {method: 'POST',
     headers: {'Content-Type': 'application/json'},

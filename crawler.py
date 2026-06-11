@@ -18,6 +18,7 @@ import time
 import hashlib
 import argparse
 import json
+import re
 import socket
 import shutil
 from datetime import datetime, timezone
@@ -105,9 +106,69 @@ EXCLUDE_DEFAULTS = {
 EXCLUDE_CONFIG = Path(__file__).resolve().parent / "exclude_paths.json"
 
 
+# --- Exclude matching --------------------------------------------------------
+# An exclude entry is one of two kinds:
+#   * a plain absolute path -> component-aware PREFIX match ("/x/FOO" excludes
+#     "/x/FOO" and "/x/FOO/..." but never the sibling "/x/FOO_BAR"); children are
+#     covered automatically.
+#   * a glob pattern -> matched against the WHOLE path. "*" means any run of
+#     characters (including "/"), "?" means any single character. An entry
+#     containing either metacharacter is treated as a glob, e.g.
+#     "*/Library/Application Support/*" excludes that folder's contents under
+#     every user. No other characters are special ("[" is literal), so the
+#     crawl-time matcher (regex) and the prune matcher (SQL LIKE) stay identical.
+# Because a glob matches the whole path, add a trailing "*" (or "/*") to catch a
+# folder's contents -- "*/Foo" alone matches only the folder path itself.
+
+def _has_glob(pattern: str) -> bool:
+    return "*" in pattern or "?" in pattern
+
+
+def is_valid_exclude(entry) -> bool:
+    """A usable exclude entry: an absolute path, or a glob with at least one
+    literal anchor. Rejects empty strings and match-everything patterns like
+    "*" or "/*" -- via --prune-excluded those would delete the whole index."""
+    if not isinstance(entry, str):
+        return False
+    entry = entry.strip()
+    if not entry:
+        return False
+    if not (entry.startswith("/") or _has_glob(entry)):
+        return False
+    return any(c not in "*?/" for c in entry)  # require a literal anchor
+
+
+def _glob_to_regex(pattern: str):
+    """Compile a "*"/"?" glob to an anchored, full-path regex."""
+    parts = []
+    for ch in pattern:
+        if ch == "*":
+            parts.append(".*")
+        elif ch == "?":
+            parts.append(".")
+        else:
+            parts.append(re.escape(ch))
+    return re.compile("".join(parts) + r"\Z", re.DOTALL)
+
+
+def _glob_to_like(pattern: str) -> str:
+    """Translate a "*"/"?" glob to a DuckDB LIKE pattern (used with ESCAPE '\\')."""
+    out = []
+    for ch in pattern:
+        if ch == "*":
+            out.append("%")
+        elif ch == "?":
+            out.append("_")
+        elif ch in "%_\\":
+            out.append("\\" + ch)
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
 def load_user_excludes() -> set:
     """Read the user exclude list. Missing/garbage file -> no user excludes.
-    Only absolute-path strings are accepted; everything else is ignored."""
+    Only valid entries (absolute paths or anchored globs) are accepted."""
     try:
         with open(EXCLUDE_CONFIG) as f:
             data = json.load(f)
@@ -115,11 +176,26 @@ def load_user_excludes() -> set:
         return set()
     if not isinstance(data, list):
         return set()
-    return {p for p in data if isinstance(p, str) and p.startswith("/")}
+    return {p.strip() for p in data if is_valid_exclude(p)}
 
 
 # The effective exclude set: locked defaults plus whatever the UI saved.
 EXCLUDE_PATHS = EXCLUDE_DEFAULTS | load_user_excludes()
+
+
+def _split_excludes(paths):
+    """Partition the exclude set into literal prefixes and precompiled globs
+    so should_skip does no per-call regex compilation."""
+    literals, globs = set(), []
+    for ex in paths:
+        if _has_glob(ex):
+            globs.append(_glob_to_regex(ex))
+        else:
+            literals.add(ex)
+    return literals, globs
+
+
+_EXCLUDE_LITERALS, _EXCLUDE_GLOBS = _split_excludes(EXCLUDE_PATHS)
 
 # File extensions that get full EXIF extraction (slower but rich metadata)
 EXIF_EXTENSIONS = {
@@ -341,16 +417,20 @@ def get_exif(et_ctx, path_str: str) -> dict:
 
 
 def should_skip(path: Path, skip_dirs: set) -> bool:
-    """Return True if this path should be excluded from crawling. Both the
-    self-exclusion dirs and EXCLUDE_PATHS match on a full path component (exact,
-    or a '/'-delimited prefix) so e.g. '/x/KMSDB_PROJ' never shadows a sibling
-    '/x/KMSDB_PROJ_BACKUP'."""
+    """Return True if this path should be excluded from crawling. The
+    self-exclusion dirs and plain-path excludes match on a full path component
+    (exact, or a '/'-delimited prefix) so e.g. '/x/KMSDB_PROJ' never shadows a
+    sibling '/x/KMSDB_PROJ_BACKUP'; glob excludes match the whole path (see the
+    exclude-matching helpers above)."""
     path_str = str(path)
     for d in skip_dirs:
         if path_str == d or path_str.startswith(d + "/"):
             return True
-    for ex in EXCLUDE_PATHS:
+    for ex in _EXCLUDE_LITERALS:
         if path_str == ex or path_str.startswith(ex + "/"):
+            return True
+    for rx in _EXCLUDE_GLOBS:
+        if rx.match(path_str):
             return True
     return False
 
@@ -758,10 +838,11 @@ def prune():
 def prune_excluded():
     """Remove DB rows whose path is now covered by the exclude list.
 
-    This lets exclude-list edits apply retroactively. It uses the same
-    component-aware path-prefix rule as should_skip(), so excluding /x/FOO
-    removes /x/FOO/bar but not /x/FOO_BAR/bar. It does not touch the filesystem,
-    so it is safe for rows on disconnected volumes.
+    This lets exclude-list edits apply retroactively, using the same matching
+    rules as should_skip(): plain paths are component-aware prefixes (excluding
+    /x/FOO removes /x/FOO/bar but not /x/FOO_BAR/bar) and glob entries match the
+    whole path via SQL LIKE. It does not touch the filesystem, so it is safe for
+    rows on disconnected volumes.
     """
     print(f"\n{'='*60}")
     print("  Prune-excluded mode — removing rows now under the exclude list")
@@ -777,16 +858,26 @@ def prune_excluded():
     if user:
         print("\n  Rows matched per user exclude entry:")
         for ex in user:
-            n = con.execute(
-                "SELECT count(*) FROM files WHERE path = ? OR starts_with(path, ?)",
-                [ex, ex + "/"],
-            ).fetchone()[0]
+            if _has_glob(ex):
+                n = con.execute(
+                    "SELECT count(*) FROM files WHERE path LIKE ? ESCAPE '\\'",
+                    [_glob_to_like(ex)],
+                ).fetchone()[0]
+            else:
+                n = con.execute(
+                    "SELECT count(*) FROM files WHERE path = ? OR starts_with(path, ?)",
+                    [ex, ex + "/"],
+                ).fetchone()[0]
             print(f"    {n:>12,}  {ex}")
 
     conds, params = [], []
     for ex in sorted(EXCLUDE_PATHS):
-        conds.append("(path = ? OR starts_with(path, ?))")
-        params.extend([ex, ex + "/"])
+        if _has_glob(ex):
+            conds.append("path LIKE ? ESCAPE '\\'")
+            params.append(_glob_to_like(ex))
+        else:
+            conds.append("(path = ? OR starts_with(path, ?))")
+            params.extend([ex, ex + "/"])
     if not conds:
         print("\n  Exclude list is empty — nothing to prune.\n")
         con.close()
