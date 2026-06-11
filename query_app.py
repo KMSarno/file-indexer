@@ -93,6 +93,12 @@ def _cmd(*flags):
 COMMANDS = {
     "reindex": _cmd("--reindex-changed"),
     "scan":    _cmd(),
+    # Two-phase indexing: a metadata-only sweep (no MD5 reads, so it runs at
+    # directory-walk speed), then a separate pass that fills in the missing
+    # hashes smallest-first. Together they make the index usable in minutes
+    # while dedup data arrives in the background.
+    "scan_fast":     _cmd("--no-hash"),
+    "hash_backfill": _cmd("--hash-only"),
     "prune":   _cmd("--prune"),
     "prune_excluded": _cmd("--prune-excluded"),
     "sync":    " && ".join([_cmd("--reindex-changed"), _cmd(), _cmd("--prune")]),
@@ -1153,6 +1159,8 @@ PAGE = """<!doctype html>
   <div id="user-presets"></div>
   <h3>Indexing</h3>
   <div id="maint">
+    <button data-mode="scan_fast" title="Metadata-only sweep (no content hashing) — fast first index">Fast scan (no hashes)</button>
+    <button data-mode="hash_backfill" title="Hash files the fast scan skipped, smallest first — enables the duplicate manager">Backfill hashes</button>
     <button data-mode="reindex">Reindex changed</button>
     <button data-mode="scan">Scan for new</button>
     <button data-mode="prune">Prune deleted</button>
@@ -1620,6 +1628,7 @@ const maintBtns = [...document.querySelectorAll('#maint button')];
 const haltBtn = document.getElementById('halt');
 const clearBtn = document.getElementById('clearlog');
 const LABELS = {reindex:'Reindex changed', scan:'Scan for new',
+                scan_fast:'Fast scan (no hashes)', hash_backfill:'Backfill hashes',
                 prune:'Prune deleted', prune_excluded:'Prune excluded',
                 sync:'Full sync', compact:'Compact DB'};
 const PHASES = {preparing:'snapshotting files.db', running:'running',
