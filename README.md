@@ -59,6 +59,21 @@ Privacy & Security → Open Anyway** — rather than a dead-end "damaged" error.
 Tester install steps, including how to seed the app with an existing
 `files.db`, live in [README-DAD-TESTER.md](README-DAD-TESTER.md).
 
+### Tagged releases (CI)
+
+Pushing a `v*` tag builds the Apple Silicon DMG + ZIP on a macOS arm64 runner
+and attaches them to a GitHub Release automatically
+(`.github/workflows/release.yml`):
+
+```bash
+git tag v0.2.5
+git push origin v0.2.5
+```
+
+The workflow syncs the package version to the tag, so the bump and the tag
+can't drift. No Apple Developer ID is used — the artifacts are ad-hoc signed,
+same as a local `npm run dist`.
+
 To point the app at a specific database instead of its own:
 
 ```bash

@@ -1,0 +1,71 @@
+name: Release (macOS arm64)
+
+# Build a signed-ad-hoc Apple Silicon DMG + ZIP whenever a version tag is
+# pushed, and attach them to a GitHub Release. Tag with: git tag v0.2.5 &&
+# git push origin v0.2.5   (the leading "v" is stripped for the version).
+on:
+  push:
+    tags:
+      - 'v*'
+  # Allow a manual run from the Actions tab for testing (no release is
+  # published unless the run was triggered by a tag).
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    # macos-14 is an Apple Silicon (arm64) runner — required so electron and
+    # the native bits are built for arm64, matching the artifact name.
+    runs-on: macos-14
+
+    steps:
+      - name: Check out the tagged commit
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Sync package version to the tag
+        # Make the artifact name track the tag (Kendex-<tag>-arm64.*) even if
+        # package.json wasn't bumped. No-op for manual (non-tag) runs.
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: npm version --no-git-tag-version --allow-same-version "${GITHUB_REF_NAME#v}"
+
+      - name: Verify sources
+        run: npm run check
+
+      - name: Build Apple Silicon DMG + ZIP
+        run: npm run dist
+        env:
+          # No Developer ID on CI — the afterPack hook ad-hoc signs the bundle.
+          # Stop electron-builder from hunting for a real identity.
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+
+      - name: Verify the ad-hoc signature
+        run: codesign --verify --deep --strict "dist/mac-arm64/Kendex.app"
+
+      - name: Publish the GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/Kendex-*-arm64.dmg
+            dist/Kendex-*-arm64.zip
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+
+      - name: Upload artifacts (manual runs)
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: kendex-macos-arm64
+          path: |
+            dist/Kendex-*-arm64.dmg
+            dist/Kendex-*-arm64.zip
