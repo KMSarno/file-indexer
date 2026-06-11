@@ -62,3 +62,18 @@ a copy of it instead of waiting hours for a first scan:
 Kendex opens this file read-only for queries, and maintenance runs work on a
 disposable copy that is swapped in only on success — your original database
 (wherever you copied it from) is never touched.
+
+## Store the Database on Another Volume
+
+By default the index lives in the app's Application Support folder on your boot
+drive. A large index is better kept on an external/data volume. To relocate it:
+
+1. Choose **File → Choose Database Location…** and pick a folder (on any
+   mounted volume).
+2. Click **Relaunch Now** when prompted.
+
+Kendex remembers the choice (in `config.json` in its app data folder) and uses
+it on every launch. Relaunching starts a **fresh** index at the new location —
+to reuse an existing one, quit first and copy your `files.db` into the chosen
+folder. (If the app was launched with the `FILE_INDEXER_DB` environment variable
+set, that variable wins and the menu choice is saved but not applied.)
