@@ -439,7 +439,7 @@ def should_skip(path: Path, skip_dirs: set) -> bool:
 # MAIN CRAWL
 # =============================================================================
 
-def crawl(do_hash: bool = True, hash_only: bool = False):
+def crawl(do_hash: bool = True, hash_only: bool = False, dupes_only: bool = False):
     print(f"\n{'='*60}")
     print(f"  File System Crawler")
     print(f"  Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -463,10 +463,34 @@ def crawl(do_hash: bool = True, hash_only: bool = False):
     # HASH-ONLY MODE
     # -------------------------------------------------------------------------
     if hash_only:
-        rows = con.execute(
-            "SELECT id, path FROM files WHERE md5 IS NULL ORDER BY size_bytes"
-        ).fetchall()
-        print(f"  Hash-only mode: {len(rows):,} files need hashing\n")
+        if dupes_only:
+            # Only files whose size collides with another file can be byte
+            # duplicates, so hashing a unique-size file just reads its bytes to
+            # confirm it has no twin -- wasted I/O. Hash only the size-collision
+            # groups (symlinks and zero-byte files excluded, matching the full
+            # crawl). Same size is necessary but NOT sufficient for a duplicate,
+            # so these still get a real MD5 to confirm. Unique-size files keep
+            # md5 = NULL; the Duplicate-files report filters on md5 IS NOT NULL,
+            # so it stays correct.
+            rows = con.execute(
+                "SELECT id, path FROM files "
+                "WHERE md5 IS NULL AND coalesce(is_symlink, false) = false "
+                "  AND size_bytes > 0 "
+                "  AND size_bytes IN ("
+                "    SELECT size_bytes FROM files "
+                "    WHERE size_bytes > 0 AND coalesce(is_symlink, false) = false "
+                "    GROUP BY size_bytes HAVING count(*) > 1"
+                "  ) "
+                "ORDER BY size_bytes"
+            ).fetchall()
+            print(f"  Hash-dupes mode: {len(rows):,} files in size-collision "
+                  f"groups need hashing")
+            print("  (files with a unique size can't be duplicates -- skipped)\n")
+        else:
+            rows = con.execute(
+                "SELECT id, path FROM files WHERE md5 IS NULL ORDER BY size_bytes"
+            ).fetchall()
+            print(f"  Hash-only mode: {len(rows):,} files need hashing\n")
         errors = 0
         pbar = tqdm(rows, unit="file", desc="Hashing")
         readout = make_readout(pbar)
@@ -1051,6 +1075,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="File system crawler")
     parser.add_argument("--no-hash",   action="store_true", help="Skip MD5 hashing (fast metadata-only pass)")
     parser.add_argument("--hash-only", action="store_true", help="Only hash files already in DB that have no hash")
+    parser.add_argument("--hash-dupes", action="store_true", help="Like --hash-only but only hashes files whose size collides with another (skips unique-size files, which can't be duplicates)")
     parser.add_argument("--prune",     action="store_true", help="Remove DB rows for files that no longer exist on disk (skips offline volumes)")
     parser.add_argument("--prune-excluded", action="store_true", help="Remove DB rows now covered by the exclude list (retroactive exclude; compact after)")
     parser.add_argument("--reindex-changed", action="store_true", help="Refresh rows whose on-disk file changed (size/mtime); skips offline volumes")
@@ -1066,6 +1091,8 @@ if __name__ == "__main__":
         prune_excluded()
     elif args.reindex_changed:
         reindex_changed(do_hash=not args.no_hash)
+    elif args.hash_dupes:
+        crawl(do_hash=False, hash_only=True, dupes_only=True)
     elif args.hash_only:
         crawl(do_hash=False, hash_only=True)
     else:
