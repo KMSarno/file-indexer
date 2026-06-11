@@ -1251,7 +1251,6 @@ PAGE = """<!doctype html>
       if any.</p>
     <details class="maint-more">
       <summary>Maintenance</summary>
-      <button data-mode="scan">Scan for new</button>
       <button data-mode="reindex">Reindex changed</button>
       <button data-mode="prune">Prune deleted</button>
       <button data-mode="prune_excluded">Prune excluded</button>
