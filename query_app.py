@@ -453,9 +453,15 @@ PAGE = """<!doctype html>
   #side button#halt:hover { background: rgba(238,102,120,.1); border-color: rgba(238,102,120,.45); }
   #side hr { border: none; border-top: 1px solid var(--line); margin: 16px 0; }
   #main {
-    flex: 1; display: flex; flex-direction: column; padding: 18px;
-    min-width: 0;
+    flex: 1; display: flex; flex-direction: column; padding: 22px 18px 18px;
+    min-width: 0; position: relative;
     background: linear-gradient(180deg, rgba(255,255,255,.025), rgba(255,255,255,0) 32%);
+  }
+  #main::before {
+    content: ""; position: absolute; top: 0; left: 18px; right: 18px; height: 3px;
+    border-radius: 999px;
+    background: linear-gradient(90deg, var(--blue), var(--cyan), var(--green), var(--yellow), var(--rose));
+    opacity: .85;
   }
   textarea {
     width: 100%; height: 118px; padding: 12px; border: 1px solid var(--line);
@@ -463,6 +469,7 @@ PAGE = """<!doctype html>
     color: var(--text);
     resize: vertical; font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
     outline: none;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.025);
   }
   textarea:focus, input:focus, select:focus {
     border-color: rgba(105,167,255,.75); box-shadow: 0 0 0 3px rgba(105,167,255,.14);
@@ -490,8 +497,22 @@ PAGE = """<!doctype html>
   }
   #out {
     flex: 1; overflow: auto; border: 1px solid var(--line); border-radius: 8px;
+    position: relative;
     background: linear-gradient(180deg, #11141a, #0c0f14);
     box-shadow: var(--shadow);
+  }
+  #out:empty::before {
+    content: ""; position: absolute; inset: 0; pointer-events: none;
+    background:
+      linear-gradient(135deg, rgba(121,170,255,.08), transparent 34%),
+      linear-gradient(315deg, rgba(97,211,148,.07), transparent 38%),
+      repeating-linear-gradient(0deg, rgba(255,255,255,.035) 0 1px, transparent 1px 34px),
+      repeating-linear-gradient(90deg, rgba(255,255,255,.025) 0 1px, transparent 1px 34px);
+    opacity: .65;
+  }
+  #out:empty::after {
+    content: ""; position: absolute; left: 28px; right: 28px; top: 26px; height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(121,170,255,.35), rgba(104,216,214,.28), transparent);
   }
   table { border-collapse: collapse; width: 100%; }
   th, td { border-bottom: 1px solid var(--line-soft); padding: 7px 10px; text-align: left;
@@ -507,7 +528,9 @@ PAGE = """<!doctype html>
     border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px;
              margin: 0 0 10px; white-space: pre-wrap; word-break: break-all;
              color: #c7cfdd;
-             background: linear-gradient(180deg, #171b24, #12151c);
+             background:
+               linear-gradient(90deg, rgba(104,216,214,.08), transparent 42%),
+               linear-gradient(180deg, #171b24, #12151c);
              font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
              /* 2 text lines + padding + border (border-box): no wrap jiggle */
              min-height: calc(2.9em + 18px); flex: none; }
@@ -521,6 +544,7 @@ PAGE = """<!doctype html>
     background:
       linear-gradient(135deg, rgba(121,170,255,.12), rgba(104,216,214,.07) 45%, rgba(240,205,99,.06)),
       var(--panel-2);
+    box-shadow: 0 12px 32px rgba(0,0,0,.16), inset 0 1px 0 rgba(255,255,255,.035);
   }
   #locate legend {
     font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
