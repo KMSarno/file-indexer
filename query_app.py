@@ -90,21 +90,31 @@ def _cmd(*flags):
 # "compact" is the odd one out: it doesn't run the crawler on a snapshot but
 # rebuilds WORK_DB itself from the live DB (attached read-only), reclaiming
 # the dead space DuckDB never returns to the OS. Same swap-on-success applies.
+def _cmd_live(*flags):
+    # Add Files targets the LIVE db (not the disposable working copy): adding is
+    # purely additive (INSERT OR IGNORE + filling NULL md5s), so it can write
+    # straight through and resume after any interruption — see _run_worker.
+    return PY + " crawler.py " + " ".join(flags + ("--db", shlex.quote(DB_PATH)))
+
+
 COMMANDS = {
+    # "add" is the one user-facing indexing action: a metadata-only sweep (fast,
+    # no MD5 reads) then a size-collision-only hash pass that logs duplicates.
+    # It writes directly to the live DB and is resumable (handled specially in
+    # _run_worker); the rest below are copy-on-write (snapshot → swap on success).
+    "add":     " && ".join([_cmd_live("--no-hash"), _cmd_live("--hash-dupes")]),
     "reindex": _cmd("--reindex-changed"),
     "scan":    _cmd(),
-    # Two-phase indexing: a metadata-only sweep (no MD5 reads, so it runs at
-    # directory-walk speed), then a separate pass that fills in the missing
-    # hashes smallest-first. Together they make the index usable in minutes
-    # while dedup data arrives in the background.
-    "scan_fast":     _cmd("--no-hash"),
-    "hash_backfill": _cmd("--hash-only"),
     "prune":   _cmd("--prune"),
     "prune_excluded": _cmd("--prune-excluded"),
     "sync":    " && ".join([_cmd("--reindex-changed"), _cmd(), _cmd("--prune")]),
     "compact": (PY + " compact_db.py "
                 + shlex.quote(DB_PATH) + " " + shlex.quote(WORK_DB)),
 }
+
+# Modes that write straight to the live DB instead of a working copy (additive,
+# resumable, nothing to discard).
+DIRECT_MODES = {"add"}
 
 # Read-only query connection, serialized with a lock. DuckDB cursors aren't safe
 # to share across threads, so one query runs at a time — fine for a single-user
@@ -166,6 +176,45 @@ def _run_worker(mode):
         command = COMMANDS["scan"]
     log.write(f"$ {command}\n\n")
 
+    if mode in DIRECT_MODES:
+        # Additive + resumable: write straight to the live DB, no snapshot/swap,
+        # nothing to discard. The read-only query connection steps aside for the
+        # duration (the writer needs the database) and is reopened at the end.
+        log.write("Adding files — writes directly to the index and is safe to "
+                  "halt and resume; queries pause until it finishes.\n\n")
+        log.flush()
+        with _lock:
+            try:
+                if _con is not None:
+                    _con.close()
+            except Exception:
+                pass
+            _con = None
+        proc = subprocess.Popen(
+            command, shell=True, cwd=BASE_DIR,
+            stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
+        )
+        with _run_lock:
+            _run.update(pid=proc.pid, phase="running")
+        code = proc.wait()
+        log.flush()
+        with _run_lock:
+            halted = _run["halt_requested"]
+        if halted:
+            log.write("\n[stopped] Halted — files added so far are kept. "
+                      "Run Add Files again to resume.\n")
+        elif code != 0:
+            log.write(f"\n[stopped] Exited {code} — files added so far are kept. "
+                      f"Run Add Files again to resume.\n")
+        else:
+            log.write("\n[committed] Add Files complete.\n")
+        log.close()
+        _open_con()                         # reopen read-only (acquires _lock)
+        with _run_lock:
+            _run.update(active=False, exit_code=code, phase="done", pid=None,
+                        halt_requested=False)
+        return
+
     if mode == "compact":
         # compact_db.py builds WORK_DB itself (COPY FROM DATABASE from the
         # live DB, attached read-only) — no snapshot needed.
@@ -185,7 +234,7 @@ def _run_worker(mode):
                     _run.update(active=False, exit_code=None, phase="error",
                                 pid=None, halt_requested=False)
                 return
-        elif mode in ("scan", "scan_fast", "sync"):
+        elif mode in ("scan", "sync"):
             log.write("No files.db exists yet; first scan will create it "
                       "in the working copy.\n")
             if mode == "sync":
@@ -715,7 +764,7 @@ PAGE = """<!doctype html>
   }
   #presets:hover { border-color: rgba(var(--cyan-rgb), .28); }
   /* Collapsible "Maintenance" group: rarely-used / destructive actions tucked
-     away so the everyday Quick scan / Mark New Duplicates stay one click. */
+     away so the everyday Add Files action stays one click. */
   .maint-more { margin: 0 0 4px; }
   .maint-more > summary {
     list-style: none; display: flex; align-items: center; gap: 9px;
@@ -1194,10 +1243,10 @@ PAGE = """<!doctype html>
   <div id="user-presets"></div>
   <h3>Indexing</h3>
   <div id="maint">
-    <button data-mode="scan_fast" title="Lists every file (names, sizes, dates) quickly, without checking for duplicates. Run Mark New Duplicates afterward to do that.">Quick scan</button>
-    <button data-mode="hash_backfill" title="Checks the contents of newly added files for duplicates, then shows matches in the Duplicate manager. Slower — it reads every file. Run after a Quick scan.">Mark New Duplicates</button>
-    <p class="hint"><b>Mark New Duplicates</b> checks the contents of newly added
-      files to find any duplications. When it finishes, open the
+    <button data-mode="add" title="Finds everything new on your drives, adds it to the index, and checks the new files for duplicates. Safe to stop and resume — nothing already added is lost.">Add Files</button>
+    <p class="hint"><b>Add Files</b> finds everything new on your drives, adds it
+      to the index, and checks the new files for duplicates. When it finishes,
+      the log reports any duplicate sets found &mdash; open the
       <b>Duplicate manager</b> to review them and choose which copy to delete,
       if any.</p>
     <details class="maint-more">
@@ -1674,9 +1723,12 @@ const maintBtns = [...document.querySelectorAll('#maint button')];
 const haltBtn = document.getElementById('halt');
 const clearBtn = document.getElementById('clearlog');
 const LABELS = {reindex:'Reindex changed', scan:'Scan for new',
-                scan_fast:'Quick scan', hash_backfill:'Mark New Duplicates',
+                add:'Add Files',
                 prune:'Prune deleted', prune_excluded:'Prune excluded',
                 sync:'Full sync', compact:'Compact DB'};
+const DIRECT_MODES = ['add'];   // write straight to the DB; halting keeps progress
+const isDirect = m => DIRECT_MODES.includes(m);
+let runMode = null;             // current/last run mode, for halt messaging
 const PHASES = {preparing:'snapshotting files.db', running:'running',
                 halting:'halting'};
 let polling = null;
@@ -1699,9 +1751,14 @@ function renderLog(full) {
 
 for (const b of maintBtns) {
   b.onclick = async () => {
-    if (!confirm('Run "' + LABELS[b.dataset.mode] + '"?\\n\\nThe task works on '
-        + 'a copy of files.db; your current DB is only replaced if it finishes. '
-        + 'You can Halt & discard at any time.')) return;
+    const m = b.dataset.mode;
+    const msg = isDirect(m)
+      ? 'Run "' + LABELS[m] + '"?\\n\\nIt adds new files to the index and is safe '
+        + 'to halt and resume — nothing already added is lost.'
+      : 'Run "' + LABELS[m] + '"?\\n\\nThe task works on a copy of files.db; your '
+        + 'current DB is only replaced if it finishes. You can Halt & discard at '
+        + 'any time.';
+    if (!confirm(msg)) return;
     const r = await fetch('/api/run', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({mode: b.dataset.mode})
@@ -1714,8 +1771,12 @@ for (const b of maintBtns) {
 }
 
 haltBtn.onclick = async () => {
-  if (!confirm('Halt the running scan and discard its in-progress work?\\n\\n'
-      + 'Your current files.db is left completely unchanged.')) return;
+  const hmsg = isDirect(runMode)
+    ? 'Stop Add Files?\\n\\nFiles added so far are kept — click Add Files again '
+      + 'later to resume where it left off.'
+    : 'Halt the running scan and discard its in-progress work?\\n\\n'
+      + 'Your current files.db is left completely unchanged.';
+  if (!confirm(hmsg)) return;
   haltBtn.disabled = true;
   const d = await (await fetch('/api/run/halt', {method: 'POST',
     headers: {'Content-Type': 'application/json'}})).json();
@@ -1801,15 +1862,23 @@ async function poll() {
     if (s.progress) pathbox.textContent = s.progress;
     if (s.active) {
       setBusy(true);
+      runMode = s.mode;
+      haltBtn.textContent = isDirect(s.mode)
+        ? '\\u25A0 Halt (keep progress)' : '\\u25A0 Halt & discard run';
       const phase = PHASES[s.phase] || 'running';
+      const q = isDirect(s.mode) ? 'queries paused until it finishes'
+                                 : 'files.db still queryable';
       status.textContent = 'Maintenance: ' + (LABELS[s.mode] || s.mode)
-        + ' — ' + phase + '… (files.db still queryable)';
+        + ' — ' + phase + '… (' + q + ')';
     } else {
       setBusy(false);
       clearInterval(polling); polling = null;
-      const out_ = (s.exit_code === 0) ? 'committed' : 'discarded';
+      const out_ = isDirect(s.mode)
+        ? ((s.exit_code === 0) ? 'finished, changes saved' : 'stopped, progress kept')
+        : ((s.exit_code === 0) ? 'committed' : 'discarded');
       status.textContent = 'Maintenance finished — ' + out_
         + ' (exit ' + s.exit_code + ').';
+      haltBtn.textContent = '\\u25A0 Halt & discard run';   // reset to default
       loadStats();  // a committed run changes counts and the sync time
     }
   };

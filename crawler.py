@@ -492,6 +492,7 @@ def crawl(do_hash: bool = True, hash_only: bool = False, dupes_only: bool = Fals
             ).fetchall()
             print(f"  Hash-only mode: {len(rows):,} files need hashing\n")
         errors = 0
+        hashed = set()                      # md5s computed this run, for the report
         pbar = tqdm(rows, unit="file", desc="Hashing")
         readout = make_readout(pbar)
         for row_id, path_str in pbar:
@@ -499,12 +500,35 @@ def crawl(do_hash: bool = True, hash_only: bool = False, dupes_only: bool = Fals
             h = md5_file(Path(path_str))
             if h:
                 con.execute("UPDATE files SET md5 = ? WHERE id = ?", [h, row_id])
+                hashed.add(h)
             else:
                 errors += 1
             readout(path_str, time.monotonic() - t0)
         con.commit()
-        print(f"\n  Done. Errors: {errors}")
+
+        # Report how many duplicate sets this run logged -- md5 groups (>1 copy)
+        # that include a file hashed just now. Run-scoped, so re-running doesn't
+        # re-announce old duplicates. Counted via a temp table since the set of
+        # new md5s can be large.
+        dup_sets = 0
+        if hashed:
+            con.execute("CREATE OR REPLACE TEMP TABLE _new_md5 (md5 TEXT)")
+            con.executemany("INSERT INTO _new_md5 VALUES (?)", [[h] for h in hashed])
+            dup_sets = con.execute(
+                "SELECT count(*) FROM ("
+                "  SELECT md5 FROM files WHERE md5 IN (SELECT md5 FROM _new_md5) "
+                "  GROUP BY md5 HAVING count(*) > 1)"
+            ).fetchone()[0]
         con.close()
+
+        print(f"\n  Done. Errors: {errors}")
+        print(f"\n{'='*60}")
+        if dup_sets:
+            print(f"  {dup_sets:,} duplicate set{'s' if dup_sets != 1 else ''} "
+                  f"logged -- see the Duplicate Manager")
+        else:
+            print("  No duplicate sets logged")
+        print(f"{'='*60}\n")
         return
 
     # -------------------------------------------------------------------------
