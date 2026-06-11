@@ -460,12 +460,13 @@ def get_stats() -> dict:
             return out
     out["files"] = n
     out["bytes"] = int(total)
-    # Every mounted volume (including the boot volume) appears under /Volumes
-    # on macOS. Use ismount — matching the crawler's logic — so a stale,
-    # empty mountpoint directory doesn't read as "mounted".
+    # Named volumes live under /Volumes, but the boot disk is stored as "/"
+    # (the crawler walks "/" and records its paths plainly), so check that one
+    # at "/". Use ismount — matching the crawler's logic — so a stale, empty
+    # mountpoint directory doesn't read as "mounted".
     out["volumes"] = [
         {"name": v or "(unknown)", "files": c,
-         "mounted": bool(v) and os.path.ismount("/Volumes/" + v)}
+         "mounted": bool(v) and os.path.ismount("/" if v == "/" else "/Volumes/" + v)}
         for v, c in vols
     ]
     return out
