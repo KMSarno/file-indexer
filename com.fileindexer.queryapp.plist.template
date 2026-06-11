@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.fileindexer.queryapp</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>@@UV@@</string>
+        <string>run</string>
+        <string>query_app.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>@@INSTALL_DIR@@</string>
+
+    <!-- The query UI and any crawl it launches use this DB path. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>FILE_INDEXER_DB</key>
+        <string>@@DB_PATH@@</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Tie the job's life to query_app.py: launchd starts it once the install
+         volume is mounted and the file exists, and stops retrying if it's gone
+         (e.g. the programs live on an external drive that's unplugged). -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>PathState</key>
+        <dict>
+            <key>@@INSTALL_DIR@@/query_app.py</key>
+            <true/>
+        </dict>
+    </dict>
+
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>StandardOutPath</key>
+    <string>@@LOG@@</string>
+    <key>StandardErrorPath</key>
+    <string>@@LOG@@</string>
+</dict>
+</plist>

@@ -1,0 +1,16 @@
+{
+  "name": "file-indexer",
+  "version": "0.1.0",
+  "description": "Local file indexer desktop app",
+  "main": "electron/main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron .",
+    "smoke": "FILE_INDEXER_ELECTRON_SMOKE=1 electron .",
+    "check": "node --check electron/main.js && python3 -m py_compile crawler.py query_app.py compact_db.py"
+  },
+  "devDependencies": {
+    "electron": "^31.7.7"
+  }
+}
