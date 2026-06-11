@@ -1,7 +1,7 @@
-# File Indexer Tester Build
+# Kendex Tester Build
 
 This is a local desktop test build for macOS. It starts a Python backend inside
-the app and opens the File Indexer interface in a native window.
+the app and opens the Kendex interface in a native window.
 
 ## Before Opening
 
@@ -20,8 +20,8 @@ brew install exiftool
 ## Install
 
 1. Open the `.dmg`.
-2. Drag **File Indexer** to **Applications**.
-3. Open **File Indexer**.
+2. Drag **Kendex** to **Applications**.
+3. Open **Kendex**.
 
 If macOS blocks the unsigned test build, right-click the app and choose
 **Open**, then confirm.

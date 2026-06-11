@@ -1,4 +1,4 @@
-# File Indexer
+# Kendex
 
 A single-host filesystem indexer for macOS. It walks your drives, records rich
 metadata (size, MD5, MIME type, EXIF for photos/videos) for every file into a

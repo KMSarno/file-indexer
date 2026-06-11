@@ -381,7 +381,7 @@ PAGE = """<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>File Index</title>
+<title>Kendex</title>
 <style>
   /* ============================================================
      Instrument-console theme.
@@ -807,9 +807,9 @@ PAGE = """<!doctype html>
 <body>
 <div id="side">
   <div class="brand">
-    <div class="brand-mark">FI</div>
+    <div class="brand-mark">K</div>
     <div>
-      <div class="brand-name">File Indexer</div>
+      <div class="brand-name">Kendex</div>
       <div class="brand-meta">Local index console</div>
     </div>
   </div>
@@ -1356,7 +1356,7 @@ def main():
     _open_con()
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     url = f"http://{args.host}:{args.port}"
-    print(f"File index UI → {url}   (DB: {DB_PATH}, read-only)", flush=True)
+    print(f"Kendex UI → {url}   (DB: {DB_PATH}, read-only)", flush=True)
     print("Ctrl-C to stop.", flush=True)
     try:
         server.serve_forever()

@@ -1,7 +1,7 @@
 {
-  "name": "file-indexer",
+  "name": "kendex",
   "version": "0.1.1",
-  "description": "Local file indexer desktop app",
+  "description": "Kendex - local file indexer desktop app",
   "main": "electron/main.js",
   "private": true,
   "scripts": {
@@ -12,8 +12,8 @@
     "dist": "electron-builder --mac dmg zip"
   },
   "build": {
-    "appId": "com.fileindexer.desktop",
-    "productName": "File Indexer",
+    "appId": "com.kendex.desktop",
+    "productName": "Kendex",
     "artifactName": "${productName}-${version}-${arch}.${ext}",
     "asar": true,
     "files": [

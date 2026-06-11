@@ -127,18 +127,18 @@ function applyNativeProgress(status) {
   const progress = progressFromStatus(status);
   if (progress === -1) {
     mainWindow.setProgressBar(-1);
-    mainWindow.setTitle('File Indexer');
+    mainWindow.setTitle('Kendex');
     return;
   }
 
   if (progress > 1) {
     mainWindow.setProgressBar(2, { mode: 'indeterminate' });
-    mainWindow.setTitle(`File Indexer - ${status.mode || 'maintenance'} running`);
+    mainWindow.setTitle(`Kendex - ${status.mode || 'maintenance'} running`);
     return;
   }
 
   mainWindow.setProgressBar(progress);
-  mainWindow.setTitle(`File Indexer - ${Math.round(progress * 100)}%`);
+  mainWindow.setTitle(`Kendex - ${Math.round(progress * 100)}%`);
 }
 
 function startProgressPolling() {
@@ -236,7 +236,7 @@ async function createWindow() {
     height: 840,
     minWidth: 980,
     minHeight: 640,
-    title: 'File Indexer',
+    title: 'Kendex',
     show: false,
     webPreferences: {
       nodeIntegration: false,
@@ -331,7 +331,7 @@ app.whenReady().then(async () => {
     }
     await createWindow();
   } catch (error) {
-    dialog.showErrorBox('File Indexer failed to start', error.stack || String(error));
+    dialog.showErrorBox('Kendex failed to start', error.stack || String(error));
     app.quit();
   }
 });
