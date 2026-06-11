@@ -377,6 +377,30 @@ def _jsonable(v):
     return str(v)
 
 
+def open_path(path, reveal=False) -> dict:
+    """Open an indexed file with its macOS default app, or reveal it in Finder.
+
+    Same threat model as the other POST handlers (localhost-only Host check,
+    JSON content-type so cross-origin pages can't POST without a preflight).
+    The path goes to `open` as an argv element — no shell — and only files
+    that actually exist on disk are opened.
+    """
+    if sys.platform != "darwin":
+        return {"error": "Open is only supported on macOS."}
+    if not isinstance(path, str) or not path.startswith("/"):
+        return {"error": "expected an absolute path"}
+    if not os.path.exists(path):
+        return {"error": "Not found on disk — volume offline, or index out of date?"}
+    cmd = ["open", "-R", path] if reveal else ["open", path]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+    except Exception as e:
+        return {"error": f"open failed: {e}"}
+    if proc.returncode != 0:
+        return {"error": (proc.stderr or "open failed").strip()}
+    return {"ok": True}
+
+
 PAGE = """<!doctype html>
 <html lang="en">
 <head>
@@ -412,35 +436,139 @@ PAGE = """<!doctype html>
     --red-rgb: 226,96,110;
     --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
     --shadow: 0 18px 50px rgba(0,0,0,.3);
+    /* surfaces (dark defaults; body.light overrides the lot) */
+    --app-bg: radial-gradient(1100px 520px at 6% -10%, rgba(232,166,84,.055), transparent 60%),
+              radial-gradient(900px 600px at 104% -4%, rgba(110,195,217,.05), transparent 55%),
+              linear-gradient(165deg, #1a181d 0%, #141318 48%, #121116 100%);
+    --side-bg: linear-gradient(180deg, #1c1a20 0%, #171619 60%, #151417 100%);
+    --side-foot-bg: #151417;
+    --side-line: rgba(255,255,255,.06);
+    --rule: rgba(255,255,255,.12);
+    --btn-face: #1d1c22;
+    --btn-line: rgba(255,255,255,.055);
+    --btn-text: #d8d5cf;
+    --btn-shadow: inset 0 1px 0 rgba(255,255,255,.04), 0 1px 2px rgba(0,0,0,.35);
+    --sync-text: #efd2a3;
+    --halt-text: #e695a0;
+    --save-text: #a8e3b8;
+    --input-bg: linear-gradient(180deg, #131217, #0f0e13);
+    --pane-bg: linear-gradient(180deg, #141318, #0e0d11);
+    --pane-ring: linear-gradient(rgba(255,255,255,.08), rgba(255,255,255,.05));
+    --pane-flat: #0e0d11;
+    --grid-line: rgba(255,255,255,.03);
+    --grid-line-2: rgba(255,255,255,.022);
+    --hint: rgba(151,146,140,.7);
+    --beam: linear-gradient(180deg,
+        transparent 0%,
+        rgba(110,195,217,.018) 55%,
+        rgba(110,195,217,.05) 82%,
+        rgba(160,222,238,.16) 98%,
+        rgba(220,245,252,.28) 99.4%,
+        transparent 100%);
+    --th-bg: #191820;
+    --th-text: #a39f98;
+    --th-line: rgba(255,255,255,.1);
+    --th-shadow: rgba(0,0,0,.4);
+    --cell: #d6d3cc;
+    --row-line: rgba(255,255,255,.045);
+    --zebra: rgba(255,255,255,.015);
+    --err: #f0939e;
+    --strip-bg: linear-gradient(180deg, #15141a, #111016);
+    --strip-text: #c9c6bf;
+    --busy-text: #ddb077;
+    --well: #0b0a0e;
+    --modal-bg: linear-gradient(180deg, #201f26, #1a1920);
+    --modal-btn: #232229;
+    --scroll-thumb: rgba(255,255,255,.11);
+    --scroll-thumb-hover: rgba(255,255,255,.2);
+  }
+  body.light {
+    color-scheme: light;
+    --panel: #efece4;
+    --field: #fdfcf9;
+    --line: rgba(45,35,18,.16);
+    --line-soft: rgba(45,35,18,.1);
+    --text: #2c2823;
+    --muted: #7c766c;
+    --amber: #b97b1e;
+    --amber-rgb: 185,123,30;
+    --cyan: #2e8aa6;
+    --cyan-rgb: 46,138,166;
+    --green: #3e9a58;
+    --green-rgb: 62,154,88;
+    --red: #c24350;
+    --red-rgb: 194,67,80;
+    --shadow: 0 14px 38px rgba(86,66,38,.16);
+    --app-bg: radial-gradient(1100px 520px at 6% -10%, rgba(185,123,30,.07), transparent 60%),
+              radial-gradient(900px 600px at 104% -4%, rgba(46,138,166,.06), transparent 55%),
+              linear-gradient(165deg, #f7f4ed 0%, #f3f0e8 48%, #efece3 100%);
+    --side-bg: linear-gradient(180deg, #f2efe7 0%, #ece9e0 60%, #e8e5dc 100%);
+    --side-foot-bg: #e8e5dc;
+    --side-line: rgba(45,35,18,.12);
+    --rule: rgba(45,35,18,.18);
+    --btn-face: #faf8f2;
+    --btn-line: rgba(45,35,18,.14);
+    --btn-text: #4a453c;
+    --btn-shadow: inset 0 1px 0 rgba(255,255,255,.6), 0 1px 2px rgba(86,66,38,.12);
+    --sync-text: #7c5410;
+    --halt-text: #a83844;
+    --save-text: #2c7a44;
+    --input-bg: linear-gradient(180deg, #fffefb, #faf8f2);
+    --pane-bg: linear-gradient(180deg, #fbf9f4, #f3f0e8);
+    --pane-ring: linear-gradient(rgba(45,35,18,.2), rgba(45,35,18,.13));
+    --pane-flat: #faf8f2;
+    --grid-line: rgba(45,35,18,.055);
+    --grid-line-2: rgba(45,35,18,.04);
+    --hint: rgba(124,118,108,.85);
+    --beam: linear-gradient(180deg,
+        transparent 0%,
+        rgba(46,138,166,.02) 55%,
+        rgba(46,138,166,.05) 82%,
+        rgba(46,138,166,.13) 98%,
+        rgba(26,110,140,.22) 99.4%,
+        transparent 100%);
+    --th-bg: #edeade;
+    --th-text: #6b655a;
+    --th-line: rgba(45,35,18,.16);
+    --th-shadow: rgba(86,66,38,.18);
+    --cell: #38332b;
+    --row-line: rgba(45,35,18,.08);
+    --zebra: rgba(45,35,18,.025);
+    --err: #b3424e;
+    --strip-bg: linear-gradient(180deg, #f6f3ec, #f0ede4);
+    --strip-text: #565047;
+    --busy-text: #8a5f14;
+    --well: #e6e2d6;
+    --modal-bg: linear-gradient(180deg, #fbf9f4, #f2efe7);
+    --modal-btn: #f3f0e8;
+    --scroll-thumb: rgba(45,35,18,.2);
+    --scroll-thumb-hover: rgba(45,35,18,.32);
   }
   * { box-sizing: border-box; }
   body {
     font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     margin: 0; display: flex; height: 100vh; color: var(--text);
-    background:
-      radial-gradient(1100px 520px at 6% -10%, rgba(232,166,84,.055), transparent 60%),
-      radial-gradient(900px 600px at 104% -4%, rgba(110,195,217,.05), transparent 55%),
-      linear-gradient(165deg, #1a181d 0%, #141318 48%, #121116 100%);
+    background: var(--app-bg);
   }
   ::selection { background: rgba(232,166,84,.32); }
   button, input, select, textarea { font: inherit; }
   button { color: inherit; }
-  button:focus-visible { outline: 2px solid rgba(110,195,217,.55); outline-offset: 2px; }
+  button:focus-visible { outline: 2px solid rgba(var(--cyan-rgb), .55); outline-offset: 2px; }
   ::-webkit-scrollbar { width: 10px; height: 10px; }
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-corner { background: transparent; }
   ::-webkit-scrollbar-thumb {
-    background: rgba(255,255,255,.11); border-radius: 8px;
+    background: var(--scroll-thumb); border-radius: 8px;
     border: 2px solid transparent; background-clip: padding-box;
   }
-  ::-webkit-scrollbar-thumb:hover { background-color: rgba(255,255,255,.2); }
+  ::-webkit-scrollbar-thumb:hover { background-color: var(--scroll-thumb-hover); }
 
   /* ---- sidebar ---- */
   #side {
     width: 252px; flex: none; display: flex; flex-direction: column;
-    border-right: 1px solid rgba(255,255,255,.06);
+    border-right: 1px solid var(--side-line);
     padding: 16px 14px 0; overflow-y: auto;
-    background: linear-gradient(180deg, #1c1a20 0%, #171619 60%, #151417 100%);
+    background: var(--side-bg);
   }
   .brand { display: flex; gap: 11px; align-items: center; margin: 0 0 12px; flex: none; }
   .brand-mark {
@@ -461,7 +589,7 @@ PAGE = """<!doctype html>
   }
   #side h3::after {
     content: ""; flex: 1; height: 1px;
-    background: linear-gradient(90deg, rgba(255,255,255,.1), transparent);
+    background: linear-gradient(90deg, var(--rule), transparent);
   }
   #side h3:first-of-type { margin-top: 4px; }
   #side button {
@@ -469,10 +597,10 @@ PAGE = """<!doctype html>
     position: relative; display: flex; align-items: center; gap: 9px;
     width: 100%; margin: 0 0 4px; min-height: 32px; padding: 6px 10px;
     text-align: left; cursor: pointer;
-    border: 1px solid rgba(255,255,255,.055); border-radius: 8px;
-    background: linear-gradient(180deg, rgba(255,255,255,.035), rgba(255,255,255,0) 60%), #1d1c22;
-    color: #d8d5cf;
-    box-shadow: inset 0 1px 0 rgba(255,255,255,.04), 0 1px 2px rgba(0,0,0,.35);
+    border: 1px solid var(--btn-line); border-radius: 8px;
+    background: linear-gradient(180deg, rgba(255,255,255,.035), rgba(255,255,255,0) 60%), var(--btn-face);
+    color: var(--btn-text);
+    box-shadow: var(--btn-shadow);
     overflow: hidden; isolation: isolate;
     transition: border-color .13s ease, background .13s ease, color .13s ease,
                 transform .08s ease, box-shadow .13s ease;
@@ -485,7 +613,7 @@ PAGE = """<!doctype html>
   }
   #side button:hover {
     border-color: rgba(var(--accent-rgb), .28);
-    background: linear-gradient(180deg, rgba(var(--accent-rgb), .055), rgba(var(--accent-rgb), .015)), #1d1c22;
+    background: linear-gradient(180deg, rgba(var(--accent-rgb), .055), rgba(var(--accent-rgb), .015)), var(--btn-face);
   }
   #side button:hover::before {
     background: rgba(var(--accent-rgb), .95);
@@ -496,20 +624,20 @@ PAGE = """<!doctype html>
     box-shadow: inset 0 2px 5px rgba(0,0,0,.35);
   }
   #side button:disabled { pointer-events: none; }
-  #presets button { --accent-rgb: 110,195,217; }
-  #maint button { --accent-rgb: 232,166,84; }
+  #presets button { --accent-rgb: var(--cyan-rgb); }
+  #maint button { --accent-rgb: var(--amber-rgb); }
   #maint button[data-mode="sync"] {       /* the headline "do everything" action */
-    border-color: rgba(232,166,84,.35);
-    background: linear-gradient(180deg, rgba(232,166,84,.15), rgba(232,166,84,.04)), #1d1c22;
-    color: #efd2a3; font-weight: 600;
+    border-color: rgba(var(--amber-rgb), .35);
+    background: linear-gradient(180deg, rgba(var(--amber-rgb), .15), rgba(var(--amber-rgb), .04)), var(--btn-face);
+    color: var(--sync-text); font-weight: 600;
   }
   #side-foot {
     /* Pinned to the bottom of the sidebar even when the button list scrolls,
        so the run status and Halt are always reachable. */
     position: sticky; bottom: 0; z-index: 2;
     margin: auto -14px 0; flex: none; padding: 11px 14px 13px;
-    background: #151417;
-    border-top: 1px solid rgba(255,255,255,.06);
+    background: var(--side-foot-bg);
+    border-top: 1px solid var(--side-line);
   }
   #side-status {
     display: flex; align-items: center; gap: 8px; padding: 0 2px 10px;
@@ -518,17 +646,27 @@ PAGE = """<!doctype html>
   }
   #side-status .dot {
     width: 7px; height: 7px; border-radius: 50%; flex: none;
-    background: var(--green); box-shadow: 0 0 8px rgba(121,201,140,.45);
+    background: var(--green); box-shadow: 0 0 8px rgba(var(--green-rgb), .45);
   }
-  #side-status .lbl-busy { display: none; color: #dfb277; }
+  #side-status .lbl-busy { display: none; color: var(--busy-text); }
   body.busy #side-status .lbl-idle { display: none; }
   body.busy #side-status .lbl-busy { display: inline; }
   body.busy #side-status .dot {
-    background: var(--amber); box-shadow: 0 0 9px rgba(232,166,84,.6);
+    background: var(--amber); box-shadow: 0 0 9px rgba(var(--amber-rgb), .6);
     animation: pulse 1.5s ease-in-out infinite;
   }
-  #side #halt { --accent-rgb: 226,96,110; color: #e695a0; margin: 0; }
+  #side #halt { --accent-rgb: var(--red-rgb); color: var(--halt-text); margin: 0; }
   body.busy #halt::before { animation: pulse 1.5s ease-in-out infinite; }
+  #side #theme-toggle {
+    width: 26px; min-height: 26px; margin: 0 0 0 auto; padding: 0;
+    display: grid; place-items: center; flex: none;
+    border: 1px solid transparent; border-radius: 6px;
+    background: none; box-shadow: none; color: var(--muted); font-size: 13px;
+  }
+  #side #theme-toggle::before { content: none; }
+  #side #theme-toggle:hover {
+    border-color: var(--line); background: none; color: var(--text);
+  }
 
   /* ---- main column ---- */
   #main {
@@ -538,21 +676,21 @@ PAGE = """<!doctype html>
   #main::before {                         /* amber→cyan signature hairline */
     content: ""; position: absolute; top: 0; left: 18px; right: 18px; height: 2px;
     border-radius: 999px;
-    background: linear-gradient(90deg, rgba(232,166,84,.65), rgba(232,166,84,.18) 38%,
-                                rgba(110,195,217,.4) 72%, transparent);
+    background: linear-gradient(90deg, rgba(var(--amber-rgb), .65), rgba(var(--amber-rgb), .18) 38%,
+                                rgba(var(--cyan-rgb), .4) 72%, transparent);
   }
   textarea {
     width: 100%; height: 114px; padding: 12px 14px; flex: none;
     border: 1px solid var(--line); border-radius: 9px;
-    background: linear-gradient(180deg, #131217, #0f0e13);
+    background: var(--input-bg);
     color: var(--text); caret-color: var(--cyan); resize: vertical;
     font: 13px/1.55 var(--mono); outline: none;
     box-shadow: inset 0 1px 3px rgba(0,0,0,.3);
     transition: border-color .12s ease, box-shadow .12s ease;
   }
   textarea:focus, input:focus, select:focus {
-    border-color: rgba(110,195,217,.6);
-    box-shadow: 0 0 0 3px rgba(110,195,217,.12);
+    border-color: rgba(var(--cyan-rgb), .6);
+    box-shadow: 0 0 0 3px rgba(var(--cyan-rgb), .12);
   }
   #bar { margin: 10px 0 8px; display: flex; gap: 12px; align-items: center; flex: none; }
   #run, #locate button {
@@ -574,11 +712,11 @@ PAGE = """<!doctype html>
     border: 1px solid rgba(10,22,26,.35); background: rgba(255,255,255,.25);
   }
   #status { font: 12px var(--mono); color: var(--muted); letter-spacing: .02em; }
-  body.busy #status { color: #ddb077; }
+  body.busy #status { color: var(--busy-text); }
   #run-progress {
     height: 8px; flex: none; display: none; margin: 0 0 10px;
-    border: 1px solid rgba(255,255,255,.07); border-radius: 999px;
-    overflow: hidden; background: #0b0a0e;
+    border: 1px solid var(--line-soft); border-radius: 999px;
+    overflow: hidden; background: var(--well);
   }
   #run-progress > div {
     height: 100%; width: 0%; border-radius: 999px;
@@ -618,8 +756,8 @@ PAGE = """<!doctype html>
   }
   @keyframes settle-in {
     0% {
-      border-color: rgba(110,195,217,.55);
-      box-shadow: 0 0 0 1px rgba(110,195,217,.22), var(--shadow);
+      border-color: rgba(var(--cyan-rgb), .55);
+      box-shadow: 0 0 0 1px rgba(var(--cyan-rgb), .22), var(--shadow);
     }
     100% { border-color: var(--line); box-shadow: var(--shadow); }
   }
@@ -628,7 +766,7 @@ PAGE = """<!doctype html>
   #out {
     flex: 1; overflow: auto; position: relative; border-radius: 10px;
     border: 1px solid var(--line);
-    background: linear-gradient(180deg, #141318, #0e0d11);
+    background: var(--pane-bg);
     box-shadow: var(--shadow);
   }
   #out.settle { animation: settle-in .7s ease-out; }
@@ -636,37 +774,31 @@ PAGE = """<!doctype html>
     --scan-angle: 0deg;
     border-color: transparent;
     background:
-      linear-gradient(180deg, #141318, #0d0c10) padding-box,
+      var(--pane-bg) padding-box,
       conic-gradient(from var(--scan-angle),          /* travelling comet */
         transparent 0deg,
-        rgba(232,166,84,.03) 250deg,
-        rgba(232,166,84,.4) 335deg,
-        rgba(140,214,232,.85) 357deg,
+        rgba(var(--amber-rgb), .03) 250deg,
+        rgba(var(--amber-rgb), .4) 335deg,
+        rgba(var(--cyan-rgb), .85) 357deg,
         transparent 360deg) border-box,
-      linear-gradient(rgba(255,255,255,.08), rgba(255,255,255,.05)) border-box;
+      var(--pane-ring) border-box;
     animation: scan-border 10s linear infinite;
   }
   #out:empty::before {                    /* drifting survey grid + idle hint */
     content: "ready — run a preset or type SQL";
     position: absolute; inset: 0; pointer-events: none;
     display: grid; place-items: center;
-    font: 12px var(--mono); letter-spacing: .08em; color: rgba(151,146,140,.7);
+    font: 12px var(--mono); letter-spacing: .08em; color: var(--hint);
     background:
-      radial-gradient(620px 320px at 50% 0%, rgba(232,166,84,.045), transparent 70%),
-      repeating-linear-gradient(0deg, rgba(255,255,255,.03) 0 1px, transparent 1px 36px),
-      repeating-linear-gradient(90deg, rgba(255,255,255,.022) 0 1px, transparent 1px 36px);
+      radial-gradient(620px 320px at 50% 0%, rgba(var(--amber-rgb), .05), transparent 70%),
+      repeating-linear-gradient(0deg, var(--grid-line) 0 1px, transparent 1px 36px),
+      repeating-linear-gradient(90deg, var(--grid-line-2) 0 1px, transparent 1px 36px);
     animation: grid-drift 18s linear infinite;
   }
   #out:empty::after {                     /* slow scan beam */
     content: ""; position: absolute; inset: 0; pointer-events: none;
     border-radius: inherit;
-    background: linear-gradient(180deg,
-        transparent 0%,
-        rgba(110,195,217,.018) 55%,
-        rgba(110,195,217,.05) 82%,
-        rgba(160,222,238,.16) 98%,
-        rgba(220,245,252,.28) 99.4%,
-        transparent 100%) no-repeat;
+    background: var(--beam) no-repeat;
     background-size: 100% 180px;
     animation: scan-sweep 7s cubic-bezier(.45,.05,.55,.95) infinite;
   }
@@ -674,28 +806,28 @@ PAGE = """<!doctype html>
   th, td { padding: 7px 10px; text-align: left; white-space: nowrap;
            max-width: 480px; overflow: hidden; text-overflow: ellipsis; }
   th {
-    position: sticky; top: 0; z-index: 1; background: #191820;
-    color: #a39f98; font: 600 11px var(--mono);
+    position: sticky; top: 0; z-index: 1; background: var(--th-bg);
+    color: var(--th-text); font: 600 11px var(--mono);
     text-transform: uppercase; letter-spacing: .07em;
-    border-bottom: 1px solid rgba(255,255,255,.1);
-    box-shadow: 0 1px 0 rgba(0,0,0,.4);
+    border-bottom: 1px solid var(--th-line);
+    box-shadow: 0 1px 0 var(--th-shadow);
   }
   td {
-    font: 12.5px/1.5 var(--mono); color: #d6d3cc;
-    border-bottom: 1px solid rgba(255,255,255,.045);
+    font: 12.5px/1.5 var(--mono); color: var(--cell);
+    border-bottom: 1px solid var(--row-line);
   }
   td.num { text-align: right; }
-  #out tr:nth-child(even) td { background: rgba(255,255,255,.015); }
-  #out tr:hover td { background: rgba(110,195,217,.08); }
-  .err { color: #f0939e; padding: 14px 16px; white-space: pre-wrap;
+  #out tr:nth-child(even) td { background: var(--zebra); }
+  #out tr:hover td { background: rgba(var(--cyan-rgb), .1); }
+  .err { color: var(--err); padding: 14px 16px; white-space: pre-wrap;
          font: 12.5px/1.6 var(--mono); }
 
   /* ---- path readout strip (also hosts the tqdm progress line) ---- */
   #pathbox {
     flex: none; margin: 0 0 10px; padding: 8px 12px;
     border: 1px solid var(--line-soft); border-radius: 8px;
-    background: linear-gradient(180deg, #15141a, #111016);
-    color: #c9c6bf; font: 12.5px/1.5 var(--mono);
+    background: var(--strip-bg);
+    color: var(--strip-text); font: 12.5px/1.5 var(--mono);
     white-space: pre-wrap; word-break: break-all;
     box-shadow: inset 0 1px 3px rgba(0,0,0,.25);
     /* 2 text lines + padding + border (border-box): no wrap jiggle */
@@ -703,10 +835,10 @@ PAGE = """<!doctype html>
     transition: border-color .25s ease, color .25s ease;
   }
   #pathbox:empty::before {
-    content: "hover a result row to preview its full path";
-    color: rgba(151,146,140,.6);
+    content: "hover a row to preview its path — right-click a row to open it";
+    color: var(--hint);
   }
-  body.busy #pathbox { border-color: rgba(232,166,84,.3); color: #e6c596; }
+  body.busy #pathbox { border-color: rgba(var(--amber-rgb), .35); color: var(--busy-text); }
 
   /* ---- locate form ---- */
   #locate {
@@ -723,7 +855,7 @@ PAGE = """<!doctype html>
   }
   #locate legend::before {
     content: ""; width: 6px; height: 6px; border-radius: 2px;
-    background: var(--cyan); box-shadow: 0 0 7px rgba(110,195,217,.5);
+    background: var(--cyan); box-shadow: 0 0 7px rgba(var(--cyan-rgb), .5);
   }
   #locate input, #locate select {
     padding: 6px 9px; border: 1px solid var(--line); border-radius: 7px;
@@ -732,7 +864,7 @@ PAGE = """<!doctype html>
     transition: border-color .12s ease, box-shadow .12s ease;
   }
   #locate input[type="checkbox"] { min-height: 0; accent-color: var(--cyan); }
-  #locate label { display: flex; gap: 6px; align-items: center; color: #cfccc5; }
+  #locate label { display: flex; gap: 6px; align-items: center; color: var(--btn-text); }
   .utc-note { font-size: 12px; color: var(--muted); align-self: center; }
 
   /* ---- exclude-list modal ---- */
@@ -743,8 +875,8 @@ PAGE = """<!doctype html>
   }
   #exmodal[hidden] { display: none; }
   #exmodal-panel {
-    background: linear-gradient(180deg, #201f26, #1a1920); color: var(--text);
-    border: 1px solid rgba(255,255,255,.1); border-radius: 12px;
+    background: var(--modal-bg); color: var(--text);
+    border: 1px solid var(--line); border-radius: 12px;
     padding: 20px; width: 580px; max-width: 92vw;
     max-height: 86vh; overflow: auto;
     box-shadow: 0 30px 80px rgba(0,0,0,.5);
@@ -753,7 +885,7 @@ PAGE = """<!doctype html>
   #exmodal .ex-note { color: var(--muted); font-size: 13px; margin: 0 0 10px; }
   #ex-defaults {
     background: var(--field); border: 1px solid var(--line-soft); border-radius: 7px;
-    padding: 8px 10px; color: #c9c6bf; max-height: 28vh; overflow: auto;
+    padding: 8px 10px; color: var(--strip-text); max-height: 28vh; overflow: auto;
     white-space: pre-wrap; margin: 4px 0 12px; word-break: break-all;
     font: 12px/1.6 var(--mono);
   }
@@ -761,22 +893,22 @@ PAGE = """<!doctype html>
   #exmodal .ex-btns { margin-top: 12px; display: flex; gap: 8px; align-items: center; }
   #exmodal .ex-btns button {
     padding: 7px 16px; border-radius: 7px; cursor: pointer;
-    border: 1px solid var(--line); background: #232229;
+    border: 1px solid var(--line); background: var(--modal-btn);
     transition: border-color .12s ease, background .12s ease;
   }
-  #exmodal .ex-btns button:hover { border-color: rgba(255,255,255,.2); }
+  #exmodal .ex-btns button:hover { border-color: var(--rule); }
   #ex-save {
-    border-color: rgba(121,201,140,.5); color: #a8e3b8; font-weight: 600;
-    background: linear-gradient(180deg, rgba(121,201,140,.2), rgba(121,201,140,.08));
+    border-color: rgba(var(--green-rgb), .5); color: var(--save-text); font-weight: 600;
+    background: linear-gradient(180deg, rgba(var(--green-rgb), .2), rgba(var(--green-rgb), .08));
   }
-  #ex-save:hover { border-color: rgba(121,201,140,.75); }
+  #ex-save:hover { border-color: rgba(var(--green-rgb), .75); }
   #ex-msg { color: var(--muted); font-size: 13px; }
 
   /* ---- maintenance log: amber comet border while a run is live ---- */
   #log {
     flex: 1; overflow: auto; display: none; padding: 13px 15px;
     border: 1px solid var(--line); border-radius: 10px;
-    background: #0e0d11; color: #d3d0c9; white-space: pre-wrap;
+    background: var(--pane-flat); color: var(--cell); white-space: pre-wrap;
     font: 12.5px/1.55 var(--mono);
     box-shadow: var(--shadow);
   }
@@ -784,16 +916,29 @@ PAGE = """<!doctype html>
     --scan-angle: 0deg;
     border-color: transparent;
     background:
-      linear-gradient(#0e0d11, #0e0d11) padding-box,
+      linear-gradient(var(--pane-flat), var(--pane-flat)) padding-box,
       conic-gradient(from var(--scan-angle),
         transparent 0deg,
-        rgba(232,166,84,.05) 230deg,
-        rgba(232,166,84,.55) 340deg,
-        rgba(245,205,150,.9) 357deg,
+        rgba(var(--amber-rgb), .05) 230deg,
+        rgba(var(--amber-rgb), .55) 340deg,
+        rgba(var(--amber-rgb), .9) 357deg,
         transparent 360deg) border-box,
-      linear-gradient(rgba(232,166,84,.18), rgba(255,255,255,.05)) border-box;
+      linear-gradient(rgba(var(--amber-rgb), .18), rgba(var(--amber-rgb), .06)) border-box;
     animation: scan-border 4s linear infinite;
   }
+  /* ---- row context menu (Open / Reveal / Copy) ---- */
+  #ctxmenu {
+    position: fixed; z-index: 60; min-width: 180px; padding: 4px;
+    background: var(--modal-bg); border: 1px solid var(--line);
+    border-radius: 9px; box-shadow: 0 14px 40px rgba(0,0,0,.35);
+  }
+  #ctxmenu[hidden] { display: none; }
+  #ctxmenu button {
+    display: block; width: 100%; padding: 6px 10px; text-align: left;
+    border: none; border-radius: 6px; background: none;
+    font-size: 13px; cursor: pointer; color: var(--text);
+  }
+  #ctxmenu button:hover { background: rgba(var(--cyan-rgb), .14); }
   button:disabled { opacity: .38; cursor: not-allowed; }
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after {
@@ -834,6 +979,7 @@ PAGE = """<!doctype html>
       <span class="dot"></span>
       <span class="lbl-idle">Ready</span>
       <span class="lbl-busy">Indexing&hellip;</span>
+      <button id="theme-toggle" title="Switch light / dark theme">&#9680;</button>
     </div>
     <button id="halt" disabled>&#9632; Halt &amp; discard run</button>
   </div>
@@ -887,6 +1033,11 @@ PAGE = """<!doctype html>
     </div>
   </div>
 </div>
+<div id="ctxmenu" hidden>
+  <button data-act="open">Open</button>
+  <button data-act="reveal">Reveal in Finder</button>
+  <button data-act="copy">Copy path</button>
+</div>
 <script>
 const PRESETS = __PRESETS__;
 const sql = document.getElementById('sql');
@@ -895,6 +1046,18 @@ const status = document.getElementById('status');
 const pathbox = document.getElementById('pathbox');
 const runProgress = document.getElementById('run-progress');
 const runProgressBar = runProgress.firstElementChild;
+
+// ---- Theme: follow the system by default; remember a manual override ----
+const themeBtn = document.getElementById('theme-toggle');
+function applyTheme(t) { document.body.classList.toggle('light', t === 'light'); }
+let theme = localStorage.getItem('kendexTheme')
+  || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+applyTheme(theme);
+themeBtn.onclick = () => {
+  theme = (theme === 'light') ? 'dark' : 'light';
+  localStorage.setItem('kendexTheme', theme);
+  applyTheme(theme);
+};
 
 const presetsEl = document.getElementById('presets');
 for (const [name, q] of PRESETS) {
@@ -953,6 +1116,7 @@ function renderTable(){
     const p = row.find(v => typeof v === 'string' && v.startsWith('/'));
     if (p !== undefined) {
       tr.onmouseenter = () => { pathbox.textContent = p; };
+      tr.oncontextmenu = e => showCtx(e, p);
     }
     if (md5Idx !== -1 && typeof row[md5Idx] === 'string') {
       tr.style.cursor = 'pointer';
@@ -1101,6 +1265,47 @@ for (const el of [locName, locExt, locFrom, locTo, locVol])
   el.addEventListener('keydown', e => {
     if (e.key === 'Enter') { e.preventDefault(); locate(); }
   });
+
+// ---- Row context menu: open / reveal / copy a result's file path ----
+const ctxMenu = document.getElementById('ctxmenu');
+let ctxPath = null;
+
+function showCtx(e, p) {
+  e.preventDefault();
+  ctxPath = p;
+  ctxMenu.hidden = false;  // unhide first so the size can be measured
+  const r = ctxMenu.getBoundingClientRect();
+  ctxMenu.style.left = Math.min(e.clientX, innerWidth - r.width - 8) + 'px';
+  ctxMenu.style.top = Math.min(e.clientY, innerHeight - r.height - 8) + 'px';
+}
+function hideCtx() { ctxMenu.hidden = true; }
+document.addEventListener('click', hideCtx);
+document.addEventListener('keydown', e => { if (e.key === 'Escape') hideCtx(); });
+out.addEventListener('scroll', hideCtx);
+
+ctxMenu.onclick = async (e) => {
+  const act = e.target.dataset && e.target.dataset.act;
+  if (!act || !ctxPath) return;
+  hideCtx();
+  if (act === 'copy') {
+    try {
+      await navigator.clipboard.writeText(ctxPath);
+      status.textContent = 'Path copied.';
+    } catch (err) {
+      prompt('Copy the path:', ctxPath);
+    }
+    return;
+  }
+  let d;
+  try {
+    const r = await fetch('/api/open', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({path: ctxPath, reveal: act === 'reveal'})
+    });
+    d = await r.json();
+  } catch (err) { alert('Request failed: ' + err); return; }
+  if (d.error) alert(d.error);
+};
 
 // ---- Maintenance (runs crawler.py against a disposable copy of files.db) ----
 const log = document.getElementById('log');
@@ -1335,6 +1540,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, json.dumps({"error": "Empty query"}))
                 return
             self._send(200, json.dumps(run_query(sql)))
+        elif self.path == "/api/open":
+            self._send(200, json.dumps(open_path(
+                payload.get("path", ""), bool(payload.get("reveal")))))
         elif self.path == "/api/run":
             self._send(200, json.dumps(start_run(payload.get("mode", ""))))
         elif self.path == "/api/run/halt":
