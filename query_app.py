@@ -430,26 +430,37 @@ PAGE = """<!doctype html>
   }
   #side h3:first-of-type { margin-top: 0; }
   #side button {
+    --accent: var(--blue);
+    --accent-rgb: 121,170,255;
     display: block; width: 100%; text-align: left; margin: 0 0 6px;
     min-height: 34px; padding: 7px 10px; border: 1px solid var(--line-soft);
-    border-radius: 7px; background: transparent; cursor: pointer;
+    border-left: 3px solid var(--accent); border-radius: 7px;
+    background: linear-gradient(90deg, rgba(var(--accent-rgb), .16), rgba(var(--accent-rgb), .045));
+    cursor: pointer; position: relative; overflow: hidden; isolation: isolate;
     transition: background .12s ease, border-color .12s ease, transform .08s ease;
   }
-  #side button:hover { background: var(--hover); border-color: #445065; }
+  #side button::after {
+    content: ""; position: absolute; inset: -1px auto -1px -55%;
+    width: 42%; transform: skewX(-18deg) translateX(-120%);
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,.16), transparent);
+    transition: transform .45s ease; z-index: -1;
+  }
+  #side button:hover {
+    background: linear-gradient(90deg, rgba(var(--accent-rgb), .23), rgba(var(--accent-rgb), .07));
+    border-color: rgba(var(--accent-rgb), .42);
+  }
+  #side button:hover::after { transform: skewX(-18deg) translateX(430%); }
   #side button:active { transform: translateY(1px); }
-  #presets button:nth-child(1) { border-left: 3px solid var(--blue); background: linear-gradient(90deg, rgba(121,170,255,.18), rgba(121,170,255,.06)); }
-  #presets button:nth-child(2) { border-left: 3px solid var(--cyan); background: linear-gradient(90deg, rgba(104,216,214,.15), rgba(104,216,214,.05)); }
-  #presets button:nth-child(3) { border-left: 3px solid var(--rose); background: linear-gradient(90deg, rgba(240,132,160,.15), rgba(240,132,160,.05)); }
-  #presets button:nth-child(4) { border-left: 3px solid var(--yellow); background: linear-gradient(90deg, rgba(240,205,99,.15), rgba(240,205,99,.05)); }
-  #presets button:nth-child(5) { border-left: 3px solid var(--green); background: linear-gradient(90deg, rgba(97,211,148,.15), rgba(97,211,148,.05)); }
-  #presets button:nth-child(6) { border-left: 3px solid #b18cff; background: linear-gradient(90deg, rgba(177,140,255,.15), rgba(177,140,255,.05)); }
-  #presets button:nth-child(7) { border-left: 3px solid #ff9f6e; background: linear-gradient(90deg, rgba(255,159,110,.14), rgba(255,159,110,.05)); }
-  #maint button { border-left: 3px solid var(--green); background: linear-gradient(90deg, rgba(97,211,148,.14), rgba(97,211,148,.05)); }
-  #maint button:nth-child(4) { border-left-color: var(--cyan); background: linear-gradient(90deg, rgba(104,216,214,.14), rgba(104,216,214,.05)); }
-  #maint button:nth-child(5) { border-left-color: var(--yellow); background: linear-gradient(90deg, rgba(240,205,99,.14), rgba(240,205,99,.05)); }
-  button#clearlog { border-left: 3px solid var(--yellow); background: linear-gradient(90deg, rgba(240,205,99,.16), rgba(240,205,99,.06)); }
-  button#edit-excludes { border-left: 3px solid var(--blue); background: linear-gradient(90deg, rgba(121,170,255,.16), rgba(121,170,255,.06)); margin-top: 8px; }
-  button#halt { border-left: 3px solid var(--red); color: #ff93a0; margin-top: 8px; }
+  #presets button:nth-child(2n) { --accent: var(--cyan); --accent-rgb: 104,216,214; }
+  #presets button:nth-child(3n) { --accent: #b18cff; --accent-rgb: 177,140,255; }
+  #presets button:nth-child(5n) { --accent: var(--green); --accent-rgb: 97,211,148; }
+  #presets button:nth-child(7n) { --accent: #ff9f6e; --accent-rgb: 255,159,110; }
+  #maint button { --accent: var(--green); --accent-rgb: 97,211,148; }
+  #maint button:nth-child(4) { --accent: var(--cyan); --accent-rgb: 104,216,214; }
+  #maint button:nth-child(5) { --accent: var(--yellow); --accent-rgb: 240,205,99; }
+  button#clearlog { --accent: var(--yellow); --accent-rgb: 240,205,99; }
+  button#edit-excludes { --accent: var(--blue); --accent-rgb: 121,170,255; margin-top: 8px; }
+  button#halt { --accent: var(--red); --accent-rgb: 238,102,120; color: #ff93a0; margin-top: 8px; }
   #side button#halt:hover { background: rgba(238,102,120,.1); border-color: rgba(238,102,120,.45); }
   #side hr { border: none; border-top: 1px solid var(--line); margin: 16px 0; }
   #main {
@@ -491,15 +502,37 @@ PAGE = """<!doctype html>
                         transition: width .2s ease; }
   #run-progress.indeterminate > div { width: 35%;
                                       animation: progress-sweep 1.1s ease-in-out infinite; }
+  @property --scan-angle {
+    syntax: "<angle>";
+    inherits: false;
+    initial-value: 0deg;
+  }
   @keyframes progress-sweep {
     0% { transform: translateX(-110%); }
     100% { transform: translateX(300%); }
   }
+  @keyframes scan-border {
+    to { --scan-angle: 360deg; }
+  }
+  @keyframes grid-drift {
+    from { background-position: 0 0, 0 0, 0 0, 0 0; }
+    to { background-position: 0 0, 0 0, 0 34px, 34px 0; }
+  }
   #out {
-    flex: 1; overflow: auto; border: 1px solid var(--line); border-radius: 8px;
+    --scan-angle: 0deg;
+    flex: 1; overflow: auto; border: 1px solid transparent; border-radius: 8px;
     position: relative;
-    background: linear-gradient(180deg, #11141a, #0c0f14);
+    background:
+      linear-gradient(180deg, #11141a, #0c0f14) padding-box,
+      conic-gradient(from var(--scan-angle),
+        rgba(121,170,255,.75) 0deg,
+        rgba(104,216,214,.62) 18deg,
+        transparent 52deg,
+        transparent 245deg,
+        rgba(97,211,148,.48) 286deg,
+        transparent 326deg) border-box;
     box-shadow: var(--shadow);
+    animation: scan-border 8s linear infinite;
   }
   #out:empty::before {
     content: ""; position: absolute; inset: 0; pointer-events: none;
@@ -509,6 +542,7 @@ PAGE = """<!doctype html>
       repeating-linear-gradient(0deg, rgba(255,255,255,.035) 0 1px, transparent 1px 34px),
       repeating-linear-gradient(90deg, rgba(255,255,255,.025) 0 1px, transparent 1px 34px);
     opacity: .65;
+    animation: grid-drift 16s linear infinite;
   }
   #out:empty::after {
     content: ""; position: absolute; left: 28px; right: 28px; top: 26px; height: 1px;
