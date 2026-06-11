@@ -382,41 +382,89 @@ PAGE = """<!doctype html>
 <meta charset="utf-8">
 <title>File Index</title>
 <style>
-  :root { color-scheme: light dark; }
+  :root {
+    color-scheme: dark;
+    --bg: #0f1115;
+    --panel: #151922;
+    --panel-2: #1b202a;
+    --line: #2b3240;
+    --line-soft: #242a35;
+    --text: #e7eaf0;
+    --muted: #8f98a8;
+    --blue: #69a7ff;
+    --green: #49c58f;
+    --yellow: #e7c75a;
+    --red: #ee6678;
+    --field: #10131a;
+    --hover: #222936;
+    --shadow: 0 18px 50px rgba(0,0,0,.26);
+  }
   * { box-sizing: border-box; }
-  body { font: 14px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
-         margin: 0; display: flex; height: 100vh; }
-  #side { width: 240px; flex: none; border-right: 1px solid #8884;
-          padding: 12px; overflow-y: auto; }
-  #side h3 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase;
-             letter-spacing: .05em; opacity: .6; }
-  #side button { display: block; width: 100%; text-align: left; margin: 0 0 4px;
-                 padding: 6px 8px; border: 1px solid #8884; border-radius: 6px;
-                 background: transparent; color: inherit; cursor: pointer;
-                 font: inherit; }
-  #side button:hover { background: #8882; }
-  #presets button { background: #7BC9F5; color: #111; }
-  #maint button { background: #F46281; color: #111; }
-  button#clearlog { background: #F6DA1F; color: #111; }
-  #side #presets button:hover { background: #7BC9F5; filter: brightness(.9); }
-  #side #maint button:hover { background: #F46281; filter: brightness(.9); }
-  #side button#clearlog:hover { background: #F6DA1F; filter: brightness(.9); }
-  button#halt { padding: 11px 8px; font: bold 16px/1.1 Arial, Helvetica, sans-serif;
-                letter-spacing: .02em; color: #c0182f; }
-  #side button#halt:hover { background: #8882; filter: none; }
-  #main { flex: 1; display: flex; flex-direction: column; padding: 12px;
-          min-width: 0; }
-  textarea { width: 100%; height: 120px; font: inherit; padding: 8px;
-             border: 1px solid #8884; border-radius: 6px; background: transparent;
-             color: inherit; resize: vertical; }
-  #bar { margin: 8px 0; display: flex; gap: 8px; align-items: center; }
-  #run { padding: 6px 16px; border-radius: 6px; border: 1px solid #8884;
-         cursor: pointer; font: inherit; }
-  #status { opacity: .7; }
-  #run-progress { height: 7px; border: 1px solid #8884; border-radius: 6px;
-                  overflow: hidden; margin: 0 0 8px; display: none;
-                  background: #8882; flex: none; }
-  #run-progress > div { height: 100%; width: 0%; background: #32b36c;
+  body {
+    font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    margin: 0; display: flex; height: 100vh; color: var(--text);
+    background: var(--bg);
+  }
+  button, input, select, textarea { font: inherit; }
+  button { color: inherit; }
+  #side {
+    width: 250px; flex: none; border-right: 1px solid var(--line);
+    padding: 16px 14px; overflow-y: auto; background: var(--panel);
+  }
+  .brand { display: flex; gap: 10px; align-items: center; margin: 0 0 18px; }
+  .brand-mark {
+    width: 34px; height: 34px; border-radius: 8px; display: grid; place-items: center;
+    background: linear-gradient(135deg, #6ca8ff, #49c58f); color: #081018;
+    font-weight: 800; letter-spacing: 0; box-shadow: 0 8px 22px rgba(73,197,143,.18);
+  }
+  .brand-name { font-size: 15px; font-weight: 700; }
+  .brand-meta { font-size: 12px; color: var(--muted); margin-top: 1px; }
+  #side h3 {
+    margin: 18px 0 8px; font-size: 11px; text-transform: uppercase;
+    letter-spacing: .08em; color: var(--muted); font-weight: 700;
+  }
+  #side h3:first-of-type { margin-top: 0; }
+  #side button {
+    display: block; width: 100%; text-align: left; margin: 0 0 6px;
+    min-height: 34px; padding: 7px 10px; border: 1px solid var(--line-soft);
+    border-radius: 7px; background: transparent; cursor: pointer;
+    transition: background .12s ease, border-color .12s ease, transform .08s ease;
+  }
+  #side button:hover { background: var(--hover); border-color: #3a4352; }
+  #side button:active { transform: translateY(1px); }
+  #presets button { border-left: 3px solid var(--blue); background: rgba(105,167,255,.08); }
+  #maint button { border-left: 3px solid var(--green); background: rgba(73,197,143,.07); }
+  button#clearlog { border-left: 3px solid var(--yellow); background: rgba(231,199,90,.08); }
+  button#edit-excludes { border-left: 3px solid var(--blue); background: rgba(105,167,255,.08); margin-top: 8px; }
+  button#halt { border-left: 3px solid var(--red); color: #ff93a0; margin-top: 8px; }
+  #side button#halt:hover { background: rgba(238,102,120,.1); border-color: rgba(238,102,120,.45); }
+  #side hr { border: none; border-top: 1px solid var(--line); margin: 16px 0; }
+  #main {
+    flex: 1; display: flex; flex-direction: column; padding: 18px;
+    min-width: 0; background: var(--bg);
+  }
+  textarea {
+    width: 100%; height: 118px; padding: 12px; border: 1px solid var(--line);
+    border-radius: 8px; background: var(--field); color: var(--text);
+    resize: vertical; font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
+    outline: none;
+  }
+  textarea:focus, input:focus, select:focus {
+    border-color: rgba(105,167,255,.75); box-shadow: 0 0 0 3px rgba(105,167,255,.14);
+  }
+  #bar { margin: 10px 0 8px; display: flex; gap: 10px; align-items: center; }
+  #run, #locate button {
+    min-height: 34px; padding: 6px 14px; border-radius: 7px;
+    border: 1px solid rgba(105,167,255,.5); background: rgba(105,167,255,.16);
+    cursor: pointer; font-weight: 650;
+  }
+  #run:hover, #locate button:hover { background: rgba(105,167,255,.23); }
+  #status { color: var(--muted); }
+  #run-progress {
+    height: 7px; border: 1px solid var(--line-soft); border-radius: 999px;
+    overflow: hidden; margin: 0 0 10px; display: none; background: #0b0d12; flex: none;
+  }
+  #run-progress > div { height: 100%; width: 0%; background: var(--green);
                         transition: width .2s ease; }
   #run-progress.indeterminate > div { width: 35%;
                                       animation: progress-sweep 1.1s ease-in-out infinite; }
@@ -424,64 +472,88 @@ PAGE = """<!doctype html>
     0% { transform: translateX(-110%); }
     100% { transform: translateX(300%); }
   }
-  #out { flex: 1; overflow: auto; border: 1px solid #8884; border-radius: 6px; }
+  #out {
+    flex: 1; overflow: auto; border: 1px solid var(--line); border-radius: 8px;
+    background: #0d0f14; box-shadow: var(--shadow);
+  }
   table { border-collapse: collapse; width: 100%; }
-  th, td { border: 1px solid #8883; padding: 4px 8px; text-align: left;
+  th, td { border-bottom: 1px solid var(--line-soft); padding: 7px 10px; text-align: left;
            white-space: nowrap; max-width: 480px; overflow: hidden;
            text-overflow: ellipsis; }
-  th { position: sticky; top: 0; background: Canvas; }
-  #out tr:hover td { background: rgba(255, 230, 120, .35); }
-  #pathbox { border: 1px solid #8884; border-radius: 6px; padding: 6px 8px;
-             margin: 0 0 8px; white-space: pre-wrap; word-break: break-all;
+  th {
+    position: sticky; top: 0; background: #171b24; color: var(--muted);
+    font-size: 12px; font-weight: 700; z-index: 1;
+  }
+  td { font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; color: #d6dce7; }
+  #out tr:hover td { background: rgba(105,167,255,.09); }
+  #pathbox {
+    border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px;
+             margin: 0 0 10px; white-space: pre-wrap; word-break: break-all;
+             color: #c7cfdd; background: var(--field);
+             font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
              /* 2 text lines + padding + border (border-box): no wrap jiggle */
-             min-height: calc(2.8em + 14px); flex: none; }
+             min-height: calc(2.9em + 18px); flex: none; }
   #pathbox:empty::before { content: "(hover a result row to see its full path here)";
-                           opacity: .45; }
+                           color: var(--muted); }
   td.num { text-align: right; }
-  .err { color: #d33; padding: 12px; white-space: pre-wrap; }
-  #side hr { border: none; border-top: 1px solid #8884; margin: 16px 0; }
-  #locate { border: 1px solid #8884; border-radius: 6px; margin: 0 0 8px;
-            padding: 6px 8px 8px; display: flex; flex-wrap: wrap; gap: 6px;
-            align-items: center; }
-  #locate legend { font-size: 12px; text-transform: uppercase;
-                   letter-spacing: .05em; opacity: .6; padding: 0 4px; }
-  #locate input, #locate select { font: inherit; padding: 4px 6px;
-            border: 1px solid #8884; border-radius: 6px;
-            background: transparent; color: inherit; }
-  #locate label { display: flex; gap: 4px; align-items: center; }
-  #locate button { padding: 4px 12px; border-radius: 6px;
-                   border: 1px solid #8884; cursor: pointer; font: inherit; }
-  #maint button { border-color: #d8862a88; }
-  button#edit-excludes { background: #bef6bf; color: #111; margin-top: 8px; }
-  #side button#edit-excludes:hover { background: #bef6bf; filter: brightness(.9); }
-  .utc-note { font-size: 12px; opacity: .55; align-self: center; }
-  #halt { border-color: #d33; color: #d33; margin-top: 8px; }
-  #exmodal { position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 50;
+  .err { color: #ff93a0; padding: 14px; white-space: pre-wrap; }
+  #locate {
+    border: 1px solid var(--line); border-radius: 8px; margin: 0 0 10px;
+    padding: 12px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+    background: var(--panel-2);
+  }
+  #locate legend {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
+    color: var(--muted); padding: 0 6px; font-weight: 700;
+  }
+  #locate input, #locate select {
+    padding: 6px 9px; border: 1px solid var(--line); border-radius: 7px;
+    background: var(--field); color: var(--text); outline: none;
+    min-height: 34px;
+  }
+  #locate input[type="checkbox"] { min-height: 0; accent-color: var(--blue); }
+  #locate label { display: flex; gap: 6px; align-items: center; color: #cbd2df; }
+  .utc-note { font-size: 12px; color: var(--muted); align-self: center; }
+  #exmodal { position: fixed; inset: 0; background: rgba(0,0,0,.58); z-index: 50;
              display: flex; align-items: center; justify-content: center; }
   #exmodal[hidden] { display: none; }
-  #exmodal-panel { background: Canvas; color: CanvasText; border: 1px solid #8886;
-                   border-radius: 8px; padding: 16px 18px; width: 560px;
-                   max-width: 92vw; max-height: 86vh; overflow: auto; }
+  #exmodal-panel {
+    background: var(--panel); color: var(--text); border: 1px solid var(--line);
+    border-radius: 8px; padding: 18px; width: 560px; max-width: 92vw;
+    max-height: 86vh; overflow: auto; box-shadow: var(--shadow);
+  }
   #exmodal-panel h3 { margin: 0 0 6px; }
-  #exmodal .ex-note { opacity: .7; font-size: 13px; margin: 0 0 10px; }
-  #ex-defaults { background: #8881; border-radius: 6px; padding: 8px; opacity: .8;
-                 max-height: 28vh; overflow: auto; white-space: pre-wrap;
-                 margin: 4px 0 12px; word-break: break-all; }
-  #ex-user { width: 100%; height: 150px; font: inherit; box-sizing: border-box;
-             border: 1px solid #8884; border-radius: 6px; background: transparent;
-             color: inherit; padding: 6px; }
+  #exmodal .ex-note { color: var(--muted); font-size: 13px; margin: 0 0 10px; }
+  #ex-defaults {
+    background: var(--field); border: 1px solid var(--line-soft); border-radius: 7px;
+    padding: 8px; color: #cbd2df; max-height: 28vh; overflow: auto;
+    white-space: pre-wrap; margin: 4px 0 12px; word-break: break-all;
+  }
+  #ex-user { width: 100%; height: 150px; box-sizing: border-box; }
   #exmodal .ex-btns { margin-top: 12px; display: flex; gap: 8px; align-items: center; }
-  #exmodal .ex-btns button { padding: 5px 14px; border-radius: 6px; cursor: pointer;
-                             border: 1px solid #8884; font: inherit; }
-  #ex-save { border-color: #2a9d3a88; }
-  #ex-msg { opacity: .7; font-size: 13px; }
-  #log { flex: 1; overflow: auto; border: 1px solid #8884; border-radius: 6px;
-         padding: 10px; white-space: pre-wrap; display: none; }
+  #exmodal .ex-btns button {
+    padding: 6px 14px; border-radius: 7px; cursor: pointer;
+    border: 1px solid var(--line); background: var(--field);
+  }
+  #ex-save { border-color: rgba(73,197,143,.55); color: #8be0bb; }
+  #ex-msg { color: var(--muted); font-size: 13px; }
+  #log {
+    flex: 1; overflow: auto; border: 1px solid var(--line); border-radius: 8px;
+    padding: 12px; white-space: pre-wrap; display: none; background: #0d0f14;
+    font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
   button:disabled { opacity: .4; cursor: not-allowed; }
 </style>
 </head>
 <body>
 <div id="side">
+  <div class="brand">
+    <div class="brand-mark">FI</div>
+    <div>
+      <div class="brand-name">File Indexer</div>
+      <div class="brand-meta">Local desktop index</div>
+    </div>
+  </div>
   <h3>Presets</h3>
   <div id="presets"></div>
   <hr>
