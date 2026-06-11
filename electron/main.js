@@ -125,6 +125,10 @@ let sleepBlockerId = null;
 
 // Hold off idle sleep while a maintenance run is active (the crawler can run
 // for hours); released automatically when the run ends or the app quits.
+// 'prevent-app-suspension' is deliberate: per the Electron docs it "keeps
+// system active, but allows screen to be turned off" (macOS:
+// PreventUserIdleSystemSleep) — i.e. caffeinate -i, without forcing the
+// display to stay lit all night like 'prevent-display-sleep' would.
 function updateSleepBlocker(active) {
   if (active && sleepBlockerId === null) {
     sleepBlockerId = powerSaveBlocker.start('prevent-app-suspension');
