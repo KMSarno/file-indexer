@@ -1214,7 +1214,7 @@ PAGE = """<!doctype html>
       <button data-act="reveal">Reveal</button>
       <button data-act="copy">Copy path</button>
       <button id="inspect-dupes" hidden>List copies</button>
-      <button id="inspect-close" title="Close">&#10005;</button>
+      <button type="button" id="inspect-close" title="Close" aria-label="Close">&#10005;</button>
     </div>
     <div id="inspect-grid"></div>
   </div>
@@ -1222,7 +1222,7 @@ PAGE = """<!doctype html>
 </div>
 <div id="exmodal" hidden>
   <div id="exmodal-panel">
-    <button class="modal-x" id="ex-x" title="Close">&#10005;</button>
+    <button type="button" class="modal-x" id="ex-x" title="Close" aria-label="Close">&#10005;</button>
     <h3>Crawler exclude list</h3>
     <p class="ex-note">Files under these path prefixes are skipped by the crawler.
       Changes take effect on the <b>next</b> crawl, not retroactively.</p>
@@ -1246,7 +1246,7 @@ PAGE = """<!doctype html>
 </div>
 <div id="dupmodal" hidden>
   <div id="dupmodal-panel">
-    <button class="modal-x" id="dup-x" title="Close">&#10005;</button>
+    <button type="button" class="modal-x" id="dup-x" title="Close" aria-label="Close">&#10005;</button>
     <h3>Duplicate manager</h3>
     <p class="ex-note">Top duplicate groups by wasted space (largest first).
       Tick the copies you want to delete &mdash; at least one copy of every file
