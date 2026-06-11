@@ -93,12 +93,13 @@ def _cmd(*flags):
 COMMANDS = {
     "reindex": _cmd("--reindex-changed"),
     "scan":    _cmd(),
-    # Two-phase indexing: a metadata-only sweep (no MD5 reads, so it runs at
-    # directory-walk speed), then a separate pass that fills in the missing
-    # hashes smallest-first. Together they make the index usable in minutes
-    # while dedup data arrives in the background.
-    "scan_fast":     _cmd("--no-hash"),
-    "hash_backfill": _cmd("--hash-only"),
+    # Two-phase indexing: a pure-metadata sweep (no content reads at all, so it
+    # runs at directory-walk speed and never downloads dataless iCloud files),
+    # then a dedup pass that hashes only files whose size collides with another
+    # (the only possible duplicates). The index is usable in minutes; dedup data
+    # fills in afterward.
+    "scan_fast":     _cmd("--stat-only"),
+    "hash_backfill": _cmd("--hash-dupes"),
     "prune":   _cmd("--prune"),
     "prune_excluded": _cmd("--prune-excluded"),
     "sync":    " && ".join([_cmd("--reindex-changed"), _cmd(), _cmd("--prune")]),
@@ -464,6 +465,12 @@ def get_stats() -> dict:
         except Exception as exc:
             out["error"] = f"{type(exc).__name__}: {exc}"
             return out
+        try:
+            # is_dataless is a newer column; tolerate an older DB without it.
+            out["dataless"] = cur.execute(
+                "SELECT count(*) FROM files WHERE is_dataless").fetchone()[0]
+        except Exception:
+            out["dataless"] = None
     out["files"] = n
     out["bytes"] = int(total)
     # Named volumes live under /Volumes, but the boot disk is stored as "/"
@@ -1159,8 +1166,8 @@ PAGE = """<!doctype html>
   <div id="user-presets"></div>
   <h3>Indexing</h3>
   <div id="maint">
-    <button data-mode="scan_fast" title="Metadata-only sweep (no content hashing) — fast first index">Fast scan (no hashes)</button>
-    <button data-mode="hash_backfill" title="Hash files the fast scan skipped, smallest first — enables the duplicate manager">Backfill hashes</button>
+    <button data-mode="scan_fast" title="Pure metadata sweep — no content reads, never downloads iCloud files. Fast first index.">Fast scan (metadata)</button>
+    <button data-mode="hash_backfill" title="Hash only files whose size collides with another (the only possible duplicates) — enables the duplicate manager">Find duplicates</button>
     <button data-mode="reindex">Reindex changed</button>
     <button data-mode="scan">Scan for new</button>
     <button data-mode="prune">Prune deleted</button>
@@ -1628,7 +1635,7 @@ const maintBtns = [...document.querySelectorAll('#maint button')];
 const haltBtn = document.getElementById('halt');
 const clearBtn = document.getElementById('clearlog');
 const LABELS = {reindex:'Reindex changed', scan:'Scan for new',
-                scan_fast:'Fast scan (no hashes)', hash_backfill:'Backfill hashes',
+                scan_fast:'Fast scan (metadata)', hash_backfill:'Find duplicates',
                 prune:'Prune deleted', prune_excluded:'Prune excluded',
                 sync:'Full sync', compact:'Compact DB'};
 const PHASES = {preparing:'snapshotting files.db', running:'running',
@@ -1946,6 +1953,7 @@ async function loadStats(){
   if (s.error) { add(s.error, 'warn'); return; }
   add(s.files.toLocaleString() + ' files');
   add(fmtBytes(s.bytes) + ' indexed');
+  if (s.dataless) add(s.dataless.toLocaleString() + ' not downloaded', 'warn');
   const off = (s.volumes || []).filter(v => !v.mounted).length;
   add((s.volumes || []).length + ' volumes' + (off ? ' (' + off + ' offline)' : ''),
       off ? 'warn' : '');

@@ -229,6 +229,7 @@ SCHEMA_STATEMENTS = [
         md5                 TEXT,
         mime_type           TEXT,
         is_symlink          BOOLEAN,
+        is_dataless         BOOLEAN,
         is_hidden           BOOLEAN,
         inode               BIGINT,
         hard_link_count     BIGINT,
@@ -281,16 +282,35 @@ SCHEMA_STATEMENTS = [
     """,
 ]
 
+# macOS marks an iCloud/cloud "placeholder" file (metadata present, bytes not
+# downloaded) with the SF_DATALESS super-user flag, visible from stat() without
+# triggering a download. Reading such a file's *content* (MIME sniff, hash,
+# EXIF) forces the OS to fetch it from iCloud first — ~1s per file. We detect
+# the flag and index dataless files from metadata alone instead.
+SF_DATALESS = 0x40000000
+
+# Columns added after the original schema shipped; ADD-COLUMN-IF-NOT-EXISTS
+# brings an existing files.db up to date without a rebuild.
+MIGRATIONS = [
+    "ALTER TABLE files ADD COLUMN IF NOT EXISTS is_dataless BOOLEAN",
+]
+
+
 # =============================================================================
 # HELPERS
 # =============================================================================
 
 def init_db(con):
-    """Execute each schema statement individually."""
+    """Execute each schema statement individually, then apply migrations."""
     for stmt in SCHEMA_STATEMENTS:
         stmt = stmt.strip()
         if stmt:
             con.execute(stmt)
+    for stmt in MIGRATIONS:
+        try:
+            con.execute(stmt)
+        except Exception:
+            pass  # already applied, or older DuckDB — non-fatal
 
 
 def get_volume(path: Path) -> str:
@@ -439,12 +459,15 @@ def should_skip(path: Path, skip_dirs: set) -> bool:
 # MAIN CRAWL
 # =============================================================================
 
-def crawl(do_hash: bool = True, hash_only: bool = False, dupes_only: bool = False):
+def crawl(do_hash: bool = True, hash_only: bool = False, dupes_only: bool = False,
+          stat_only: bool = False, include_dataless: bool = False):
+    mode_label = ("metadata only (stat-only)" if stat_only
+                  else "yes" if do_hash else "no hashing")
     print(f"\n{'='*60}")
     print(f"  File System Crawler")
     print(f"  Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"  Database: {DB_PATH}")
-    print(f"  Hashing: {'yes' if do_hash else 'no'}")
+    print(f"  Content reads: {mode_label}")
     print(f"{'='*60}\n")
 
     con = duckdb.connect(str(DB_PATH))
@@ -472,9 +495,15 @@ def crawl(do_hash: bool = True, hash_only: bool = False, dupes_only: bool = Fals
             # so these still get a real MD5 to confirm. Unique-size files keep
             # md5 = NULL; the Duplicate-files report filters on md5 IS NOT NULL,
             # so it stays correct.
+            # Dataless iCloud files would each download when hashed; skip them
+            # by default so a dedup pass never silently pulls gigabytes from the
+            # cloud. --include-dataless opts in.
+            dataless_clause = ("" if include_dataless
+                               else "AND coalesce(is_dataless, false) = false ")
             rows = con.execute(
                 "SELECT id, path FROM files "
                 "WHERE md5 IS NULL AND coalesce(is_symlink, false) = false "
+                f"  {dataless_clause}"
                 "  AND size_bytes > 0 "
                 "  AND size_bytes IN ("
                 "    SELECT size_bytes FROM files "
@@ -485,10 +514,15 @@ def crawl(do_hash: bool = True, hash_only: bool = False, dupes_only: bool = Fals
             ).fetchall()
             print(f"  Hash-dupes mode: {len(rows):,} files in size-collision "
                   f"groups need hashing")
-            print("  (files with a unique size can't be duplicates -- skipped)\n")
+            print("  (files with a unique size can't be duplicates -- skipped"
+                  + ("" if include_dataless else "; dataless iCloud files skipped")
+                  + ")\n")
         else:
+            dataless_clause = ("" if include_dataless
+                               else "AND coalesce(is_dataless, false) = false ")
             rows = con.execute(
-                "SELECT id, path FROM files WHERE md5 IS NULL ORDER BY size_bytes"
+                "SELECT id, path FROM files WHERE md5 IS NULL "
+                f"{dataless_clause}ORDER BY size_bytes"
             ).fetchall()
             print(f"  Hash-only mode: {len(rows):,} files need hashing\n")
         errors = 0
@@ -529,7 +563,7 @@ def crawl(do_hash: bool = True, hash_only: bool = False, dupes_only: bool = Fals
     INSERT_SQL = """
         INSERT OR IGNORE INTO files (
             path, volume, filename, extension, size_bytes, md5,
-            mime_type, is_symlink, is_hidden, inode, hard_link_count,
+            mime_type, is_symlink, is_dataless, is_hidden, inode, hard_link_count,
             created_at, modified_at, accessed_at, indexed_at,
             exif_camera_make, exif_camera_model, exif_shoot_date,
             exif_gps_lat, exif_gps_lon, exif_image_width, exif_image_height,
@@ -537,7 +571,7 @@ def crawl(do_hash: bool = True, hash_only: bool = False, dupes_only: bool = Fals
             exif_focal_length, exif_aperture, exif_iso, exif_raw
         ) VALUES (
             ?, ?, ?, ?, ?, ?,
-            ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?,
             ?, ?, ?, ?,
             ?, ?, ?,
             ?, ?, ?, ?,
@@ -654,19 +688,28 @@ def crawl(do_hash: bool = True, hash_only: bool = False, dupes_only: bool = Fals
                         modified_at = ts_to_dt(stat.st_mtime)
                         accessed_at = ts_to_dt(stat.st_atime)
 
+                        # A dataless iCloud placeholder downloads the moment its
+                        # bytes are read. stat() (and thus the flag) is free, so
+                        # we index it from metadata and never touch its content.
+                        is_dataless = bool(getattr(stat, "st_flags", 0) & SF_DATALESS)
+                        # stat_only: a pure metadata sweep — no content reads at
+                        # all, for any file. The fast first pass.
+                        read_content = not stat_only and not is_dataless
+
                         mime = None
-                        if not is_symlink:
+                        if read_content and not is_symlink:
                             mime = get_mime(file_path)
 
                         md5 = None
-                        if do_hash and not is_symlink and size > 0:
+                        if read_content and do_hash and not is_symlink and size > 0:
                             md5 = md5_file(file_path)
                             if md5:
                                 files_hashed += 1
 
                         exif = {}
                         if (
-                            EXIFTOOL_AVAILABLE
+                            read_content
+                            and EXIFTOOL_AVAILABLE
                             and et_ctx
                             and not is_symlink
                             and ext in EXIF_EXTENSIONS
@@ -683,6 +726,7 @@ def crawl(do_hash: bool = True, hash_only: bool = False, dupes_only: bool = Fals
                             md5,
                             mime,
                             is_symlink,
+                            is_dataless,
                             is_hidden,
                             stat.st_ino,
                             stat.st_nlink,
@@ -1073,9 +1117,11 @@ def reindex_changed(do_hash: bool = True):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="File system crawler")
-    parser.add_argument("--no-hash",   action="store_true", help="Skip MD5 hashing (fast metadata-only pass)")
+    parser.add_argument("--no-hash",   action="store_true", help="Skip MD5 hashing (still reads content for MIME/EXIF)")
+    parser.add_argument("--stat-only", action="store_true", help="Pure metadata sweep: no MIME/EXIF/hash, never reads file content (won't download dataless iCloud files). The fast first pass.")
     parser.add_argument("--hash-only", action="store_true", help="Only hash files already in DB that have no hash")
     parser.add_argument("--hash-dupes", action="store_true", help="Like --hash-only but only hashes files whose size collides with another (skips unique-size files, which can't be duplicates)")
+    parser.add_argument("--include-dataless", action="store_true", help="With --hash-only/--hash-dupes, also hash dataless iCloud files (downloads them); off by default")
     parser.add_argument("--prune",     action="store_true", help="Remove DB rows for files that no longer exist on disk (skips offline volumes)")
     parser.add_argument("--prune-excluded", action="store_true", help="Remove DB rows now covered by the exclude list (retroactive exclude; compact after)")
     parser.add_argument("--reindex-changed", action="store_true", help="Refresh rows whose on-disk file changed (size/mtime); skips offline volumes")
@@ -1092,8 +1138,12 @@ if __name__ == "__main__":
     elif args.reindex_changed:
         reindex_changed(do_hash=not args.no_hash)
     elif args.hash_dupes:
-        crawl(do_hash=False, hash_only=True, dupes_only=True)
+        crawl(do_hash=False, hash_only=True, dupes_only=True,
+              include_dataless=args.include_dataless)
     elif args.hash_only:
-        crawl(do_hash=False, hash_only=True)
+        crawl(do_hash=False, hash_only=True,
+              include_dataless=args.include_dataless)
+    elif args.stat_only:
+        crawl(stat_only=True)
     else:
         crawl(do_hash=not args.no_hash)
