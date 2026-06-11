@@ -809,7 +809,7 @@ PAGE = """<!doctype html>
   #status { font: 12px var(--mono); color: var(--muted); letter-spacing: .02em; }
   body.busy #status { color: var(--busy-text); }
   #run-progress {
-    height: 8px; flex: none; display: none; margin: 0 0 10px;
+    position: relative; height: 18px; flex: none; display: none; margin: 0 0 10px;
     border: 1px solid var(--line-soft); border-radius: 999px;
     overflow: hidden; background: var(--well);
   }
@@ -820,7 +820,17 @@ PAGE = """<!doctype html>
     transition: width .25s ease;
   }
   #run-progress.indeterminate > div {
-    width: 35%; animation: progress-sweep 1.2s ease-in-out infinite;
+    /* No known total: a slow breathing amber wash instead of a flying bar. */
+    width: 100%;
+    background: linear-gradient(90deg, rgba(232,166,84,.22), rgba(232,166,84,.5), rgba(232,166,84,.22));
+    box-shadow: none;
+    animation: progress-breathe 3.2s ease-in-out infinite;
+  }
+  #progress-label {
+    position: absolute; inset: 0; display: grid; place-items: center;
+    font: 600 10.5px var(--mono); letter-spacing: .05em;
+    color: #f3ead9; text-shadow: 0 1px 2px rgba(0,0,0,.55);
+    pointer-events: none;
   }
 
   /* ---- motion ---- */
@@ -829,9 +839,9 @@ PAGE = """<!doctype html>
     inherits: false;
     initial-value: 0deg;
   }
-  @keyframes progress-sweep {
-    0% { transform: translateX(-110%); }
-    100% { transform: translateX(300%); }
+  @keyframes progress-breathe {
+    0%, 100% { opacity: .5; }
+    50% { opacity: 1; }
   }
   @keyframes scan-border {
     to { --scan-angle: 360deg; }
@@ -972,6 +982,7 @@ PAGE = """<!doctype html>
   }
   #exmodal[hidden] { display: none; }
   #exmodal-panel {
+    position: relative;
     background: var(--modal-bg); color: var(--text);
     border: 1px solid var(--line); border-radius: 12px;
     padding: 20px; width: 580px; max-width: 92vw;
@@ -1064,6 +1075,7 @@ PAGE = """<!doctype html>
   }
   #dupmodal[hidden] { display: none; }
   #dupmodal-panel {
+    position: relative;
     background: var(--modal-bg); color: var(--text);
     border: 1px solid var(--line); border-radius: 12px;
     padding: 20px; width: 820px; max-width: 94vw;
@@ -1105,6 +1117,13 @@ PAGE = """<!doctype html>
     font-size: 13px; cursor: pointer; color: var(--text);
   }
   #ctxmenu button:hover { background: rgba(var(--cyan-rgb), .14); }
+  .modal-x {
+    position: absolute; top: 12px; right: 12px; width: 28px; height: 28px;
+    display: grid; place-items: center; cursor: pointer;
+    border: 1px solid transparent; border-radius: 7px;
+    background: none; color: var(--muted); font-size: 13px;
+  }
+  .modal-x:hover { border-color: var(--line); color: var(--text); }
   button:disabled { opacity: .38; cursor: not-allowed; }
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after {
@@ -1184,7 +1203,7 @@ PAGE = """<!doctype html>
     <input id="filterbox" placeholder="filter results&hellip;" title="Narrow the loaded rows (client-side)">
     <button id="export-csv" class="bar-btn" title="Download the visible rows as CSV">Export CSV</button>
   </div>
-  <div id="run-progress" aria-hidden="true"><div></div></div>
+  <div id="run-progress" aria-hidden="true"><div></div><span id="progress-label"></span></div>
   <div id="pathbox"></div>
   <div id="out"></div>
   <div id="inspect" hidden>
@@ -1203,6 +1222,7 @@ PAGE = """<!doctype html>
 </div>
 <div id="exmodal" hidden>
   <div id="exmodal-panel">
+    <button class="modal-x" id="ex-x" title="Close">&#10005;</button>
     <h3>Crawler exclude list</h3>
     <p class="ex-note">Files under these path prefixes are skipped by the crawler.
       Changes take effect on the <b>next</b> crawl, not retroactively.</p>
@@ -1226,6 +1246,7 @@ PAGE = """<!doctype html>
 </div>
 <div id="dupmodal" hidden>
   <div id="dupmodal-panel">
+    <button class="modal-x" id="dup-x" title="Close">&#10005;</button>
     <h3>Duplicate manager</h3>
     <p class="ex-note">Top duplicate groups by wasted space (largest first).
       Tick the copies you want to delete &mdash; at least one copy of every file
@@ -1552,7 +1573,12 @@ function showCtx(e, p) {
 }
 function hideCtx() { ctxMenu.hidden = true; }
 document.addEventListener('click', hideCtx);
-document.addEventListener('keydown', e => { if (e.key === 'Escape') hideCtx(); });
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Escape') return;
+  hideCtx();
+  exModal.hidden = true;     // every dialog closes on Escape, not just Cancel
+  dupModal.hidden = true;
+});
 out.addEventListener('scroll', hideCtx);
 
 async function fileAction(path, action){
@@ -1664,23 +1690,35 @@ function setBusy(on) {
   // a run (the crawler is writing to a separate copy).
 }
 
+const progressLabel = document.getElementById('progress-label');
 function updateProgress(active, progressLine) {
   if (!active) {
     runProgress.style.display = 'none';
     runProgress.classList.remove('indeterminate');
     runProgressBar.style.width = '0%';
+    progressLabel.textContent = '';
     return;
   }
   runProgress.style.display = 'block';
-  const m = (progressLine || '').match(/(\\d{1,3})%\\|/);
-  if (m) {
-    const pct = Math.max(0, Math.min(100, Number(m[1])));
+  const line = progressLine || '';
+  const pct = line.match(/(\\d{1,3})%\\|/);
+  if (pct) {
+    // Known total (reindex/verify): a real percentage fill.
+    const p = Math.max(0, Math.min(100, Number(pct[1])));
     runProgress.classList.remove('indeterminate');
-    runProgressBar.style.width = pct + '%';
-  } else {
-    runProgress.classList.add('indeterminate');
-    runProgressBar.style.width = '';
+    runProgressBar.style.width = p + '%';
+    progressLabel.textContent = p + '%';
+    return;
   }
+  // No total (first scan): tqdm emits "917601file [3:55:20, 55.64file/s, …" —
+  // surface the real numbers instead of a meaningless animation.
+  runProgress.classList.add('indeterminate');
+  runProgressBar.style.width = '';
+  const count = line.match(/(\\d+)file \\[([0-9:]+), ([0-9.]+)file\\/s/);
+  progressLabel.textContent = count
+    ? Number(count[1]).toLocaleString() + ' files · ' + count[3] + '/s · '
+      + count[2] + ' elapsed'
+    : 'working…';
 }
 
 async function poll() {
@@ -2017,6 +2055,7 @@ document.getElementById('dup-export').onclick = () => {
   setTimeout(() => URL.revokeObjectURL(a.href), 10000);
 };
 document.getElementById('dup-close').onclick = () => { dupModal.hidden = true; };
+document.getElementById('dup-x').onclick = () => { dupModal.hidden = true; };
 
 // ---- Edit exclude list (writes exclude_paths.json; applies on next crawl) ----
 const exModal = document.getElementById('exmodal');
@@ -2032,6 +2071,7 @@ document.getElementById('edit-excludes').onclick = async () => {
   exModal.hidden = false;
 };
 document.getElementById('ex-cancel').onclick = () => { exModal.hidden = true; };
+document.getElementById('ex-x').onclick = () => { exModal.hidden = true; };
 document.getElementById('ex-save').onclick = async () => {
   const lines = exUser.value.split('\\n').map(s => s.trim()).filter(Boolean);
   const bad = lines.filter(s => !s.startsWith('/'));
