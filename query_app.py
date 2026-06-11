@@ -656,11 +656,10 @@ PAGE = """<!doctype html>
   }
   .brand { display: flex; gap: 11px; align-items: center; margin: 0 0 12px; flex: none; }
   .brand-mark {
-    width: 36px; height: 36px; border-radius: 9px; display: grid; place-items: center;
-    background: linear-gradient(145deg, #f4c178 0%, #dd9a44 55%, #b87425 100%);
-    color: #221302; font: 700 13.5px var(--mono);
-    box-shadow: 0 4px 14px rgba(232,166,84,.22), inset 0 1px 0 rgba(255,255,255,.45);
+    width: 36px; height: 36px; border-radius: 9px; overflow: hidden; flex: none;
+    box-shadow: 0 4px 14px rgba(232,166,84,.18), 0 0 0 1px rgba(255,255,255,.06);
   }
+  .brand-mark svg { display: block; width: 36px; height: 36px; }
   .brand-name { font-size: 15px; font-weight: 700; letter-spacing: -.01em; }
   .brand-meta {
     margin-top: 2px; font: 600 9.5px var(--mono);
@@ -1155,7 +1154,36 @@ PAGE = """<!doctype html>
 <body>
 <div id="side">
   <div class="brand">
-    <div class="brand-mark">K</div>
+    <div class="brand-mark" role="img" aria-label="Kendex logo">
+      <svg viewBox="96 96 832 832">
+        <defs>
+          <linearGradient id="bmbg" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="#27252c"/><stop offset=".55" stop-color="#17161b"/><stop offset="1" stop-color="#100f13"/>
+          </linearGradient>
+          <linearGradient id="bmamber" gradientUnits="userSpaceOnUse" x1="0" y1="286" x2="0" y2="746">
+            <stop offset="0" stop-color="#f2bc72"/><stop offset=".6" stop-color="#d9933c"/><stop offset="1" stop-color="#a96518"/>
+          </linearGradient>
+          <linearGradient id="bmcap" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f9d390"/><stop offset="1" stop-color="#e8a654"/></linearGradient>
+          <linearGradient id="bmbyte" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#b9e7f3"/><stop offset="1" stop-color="#4ba3bd"/></linearGradient>
+          <clipPath id="bmclip"><rect x="96" y="96" width="832" height="832" rx="186"/></clipPath>
+        </defs>
+        <rect x="96" y="96" width="832" height="832" rx="186" fill="url(#bmbg)"/>
+        <g clip-path="url(#bmclip)">
+          <rect x="96" y="97" width="832" height="5" fill="#ffffff" opacity=".14"/>
+          <g transform="translate(10,0)">
+            <rect x="449" y="473" width="78" height="78" rx="11" fill="url(#bmcap)"/>
+            <rect x="545" y="377" width="78" height="78" rx="11" fill="url(#bmbyte)"/>
+            <rect x="641" y="281" width="78" height="78" rx="11" fill="url(#bmbyte)"/>
+            <rect x="545" y="569" width="78" height="78" rx="11" fill="url(#bmbyte)"/>
+            <rect x="641" y="665" width="78" height="78" rx="11" fill="url(#bmbyte)"/>
+            <rect x="306" y="300" width="124" height="86" fill="url(#bmamber)"/><path d="M306 386 a62 18 0 0 0 124 0" fill="url(#bmamber)"/><ellipse cx="368" cy="300" rx="62" ry="18" fill="url(#bmcap)"/>
+            <rect x="306" y="414" width="124" height="86" fill="url(#bmamber)"/><path d="M306 500 a62 18 0 0 0 124 0" fill="url(#bmamber)"/><ellipse cx="368" cy="414" rx="62" ry="18" fill="url(#bmcap)"/>
+            <rect x="306" y="528" width="124" height="86" fill="url(#bmamber)"/><path d="M306 614 a62 18 0 0 0 124 0" fill="url(#bmamber)"/><ellipse cx="368" cy="528" rx="62" ry="18" fill="url(#bmcap)"/>
+            <rect x="306" y="642" width="124" height="86" fill="url(#bmamber)"/><path d="M306 728 a62 18 0 0 0 124 0" fill="url(#bmamber)"/><ellipse cx="368" cy="642" rx="62" ry="18" fill="url(#bmcap)"/>
+          </g>
+        </g>
+      </svg>
+    </div>
     <div>
       <div class="brand-name">Kendex</div>
       <div class="brand-meta">Local index console</div>
