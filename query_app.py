@@ -715,7 +715,7 @@ PAGE = """<!doctype html>
   }
   #presets:hover { border-color: rgba(var(--cyan-rgb), .28); }
   /* Collapsible "Maintenance" group: rarely-used / destructive actions tucked
-     away so the everyday Fast scan / Backfill / Scan stay one click. */
+     away so the everyday Quick scan / Mark New Duplicates stay one click. */
   .maint-more { margin: 0 0 4px; }
   .maint-more > summary {
     list-style: none; display: flex; align-items: center; gap: 9px;
@@ -730,6 +730,11 @@ PAGE = """<!doctype html>
   }
   .maint-more[open] > summary::before { content: "\\25BE"; }
   .maint-more > summary:hover { border-color: rgba(var(--amber-rgb), .28); }
+  /* Plain-language note demystifying the two "hash" buttons above it. */
+  #maint .hint {
+    margin: 1px 3px 9px; font-size: 11px; line-height: 1.5; color: var(--muted);
+  }
+  #maint .hint b { color: var(--btn-text); font-weight: 600; }
   #user-presets button .preset-del {
     margin-left: auto; padding: 0 5px; border-radius: 4px;
     color: var(--muted); opacity: 0; transition: opacity .12s ease;
@@ -1189,11 +1194,15 @@ PAGE = """<!doctype html>
   <div id="user-presets"></div>
   <h3>Indexing</h3>
   <div id="maint">
-    <button data-mode="scan_fast" title="Metadata-only sweep (no content hashing) — fast first index">Fast scan (no hashes)</button>
-    <button data-mode="hash_backfill" title="Hash files the fast scan skipped, smallest first — enables the duplicate manager">Backfill hashes</button>
-    <button data-mode="scan">Scan for new</button>
+    <button data-mode="scan_fast" title="Lists every file (names, sizes, dates) quickly, without checking for duplicates. Run Mark New Duplicates afterward to do that.">Quick scan</button>
+    <button data-mode="hash_backfill" title="Checks the contents of newly added files for duplicates, then shows matches in the Duplicate manager. Slower — it reads every file. Run after a Quick scan.">Mark New Duplicates</button>
+    <p class="hint"><b>Mark New Duplicates</b> checks the contents of newly added
+      files to find any duplications. When it finishes, open the
+      <b>Duplicate manager</b> to review them and choose which copy to delete,
+      if any.</p>
     <details class="maint-more">
       <summary>Maintenance</summary>
+      <button data-mode="scan">Scan for new</button>
       <button data-mode="reindex">Reindex changed</button>
       <button data-mode="prune">Prune deleted</button>
       <button data-mode="prune_excluded">Prune excluded</button>
@@ -1665,7 +1674,7 @@ const maintBtns = [...document.querySelectorAll('#maint button')];
 const haltBtn = document.getElementById('halt');
 const clearBtn = document.getElementById('clearlog');
 const LABELS = {reindex:'Reindex changed', scan:'Scan for new',
-                scan_fast:'Fast scan (no hashes)', hash_backfill:'Backfill hashes',
+                scan_fast:'Quick scan', hash_backfill:'Mark New Duplicates',
                 prune:'Prune deleted', prune_excluded:'Prune excluded',
                 sync:'Full sync', compact:'Compact DB'};
 const PHASES = {preparing:'snapshotting files.db', running:'running',
