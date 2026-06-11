@@ -44,7 +44,13 @@ your database and exclude list are left untouched.
    uv run crawler.py --reindex-changed   # refresh changed files
    uv run crawler.py                      # add new files (resumes; skips indexed)
    uv run crawler.py --prune              # drop rows for deleted files
+   uv run crawler.py --prune-excluded     # drop rows now covered by excludes
    ```
+
+   After adding directories to the exclude list, run `--prune-excluded` to
+   remove already-indexed rows under them, then **Compact DB** to reclaim the
+   space. The web and desktop UI expose the same operation as **Prune
+   excluded**.
 
 The database location comes from the `FILE_INDEXER_DB` environment variable
 (the installer sets it in your `~/.zshrc` and in the LaunchAgent). The web UI’s

@@ -90,6 +90,7 @@ COMMANDS = {
     "reindex": _cmd("--reindex-changed"),
     "scan":    _cmd(),
     "prune":   _cmd("--prune"),
+    "prune_excluded": _cmd("--prune-excluded"),
     "sync":    " && ".join([_cmd("--reindex-changed"), _cmd(), _cmd("--prune")]),
     "compact": (PY + " compact_db.py "
                 + shlex.quote(DB_PATH) + " " + shlex.quote(WORK_DB)),
@@ -640,6 +641,7 @@ PAGE = """<!doctype html>
     <button data-mode="reindex">Reindex changed</button>
     <button data-mode="scan">Scan for new</button>
     <button data-mode="prune">Prune deleted</button>
+    <button data-mode="prune_excluded">Prune excluded</button>
     <button data-mode="sync">Full sync (all 3)</button>
     <button data-mode="compact">Compact DB</button>
   </div>
@@ -914,7 +916,8 @@ const maintBtns = [...document.querySelectorAll('#maint button')];
 const haltBtn = document.getElementById('halt');
 const clearBtn = document.getElementById('clearlog');
 const LABELS = {reindex:'Reindex changed', scan:'Scan for new',
-                prune:'Prune deleted', sync:'Full sync', compact:'Compact DB'};
+                prune:'Prune deleted', prune_excluded:'Prune excluded',
+                sync:'Full sync', compact:'Compact DB'};
 const PHASES = {preparing:'snapshotting files.db', running:'running',
                 halting:'halting'};
 let polling = null;

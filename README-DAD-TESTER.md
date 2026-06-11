@@ -35,3 +35,6 @@ on a large machine or external drives.
 
 Use **Edit exclude list** before scanning to skip drives or folders you do not
 want indexed.
+
+If you add new excludes after a scan, run **Prune excluded** to remove matching
+rows from the existing index, then run **Compact DB** to shrink the database.

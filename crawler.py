@@ -752,6 +752,62 @@ def prune():
 
 
 # =============================================================================
+# PRUNE-EXCLUDED MODE
+# =============================================================================
+
+def prune_excluded():
+    """Remove DB rows whose path is now covered by the exclude list.
+
+    This lets exclude-list edits apply retroactively. It uses the same
+    component-aware path-prefix rule as should_skip(), so excluding /x/FOO
+    removes /x/FOO/bar but not /x/FOO_BAR/bar. It does not touch the filesystem,
+    so it is safe for rows on disconnected volumes.
+    """
+    print(f"\n{'='*60}")
+    print("  Prune-excluded mode — removing rows now under the exclude list")
+    print(f"  Database: {DB_PATH}")
+    print(f"{'='*60}\n")
+
+    con = duckdb.connect(str(DB_PATH))
+
+    before = con.execute("SELECT count(*) FROM files").fetchone()[0]
+    print(f"  {before:,} rows in index")
+
+    user = sorted(load_user_excludes())
+    if user:
+        print("\n  Rows matched per user exclude entry:")
+        for ex in user:
+            n = con.execute(
+                "SELECT count(*) FROM files WHERE path = ? OR starts_with(path, ?)",
+                [ex, ex + "/"],
+            ).fetchone()[0]
+            print(f"    {n:>12,}  {ex}")
+
+    conds, params = [], []
+    for ex in sorted(EXCLUDE_PATHS):
+        conds.append("(path = ? OR starts_with(path, ?))")
+        params.extend([ex, ex + "/"])
+    if not conds:
+        print("\n  Exclude list is empty — nothing to prune.\n")
+        con.close()
+        return
+
+    con.execute(f"DELETE FROM files WHERE {' OR '.join(conds)}", params)
+    con.commit()
+    after = con.execute("SELECT count(*) FROM files").fetchone()[0]
+    con.close()
+
+    print(f"\n{'='*60}")
+    print("  Prune-excluded complete")
+    print(f"  Before:   {before:,}")
+    print(f"  Deleted:  {before - after:,}")
+    print(f"  After:    {after:,}")
+    print("  Compact the DB to reclaim the freed space.")
+    print(f"  Database: {DB_PATH}")
+    print(f"{'='*60}\n")
+
+
+# =============================================================================
 # REINDEX-CHANGED MODE
 # =============================================================================
 
@@ -905,6 +961,7 @@ if __name__ == "__main__":
     parser.add_argument("--no-hash",   action="store_true", help="Skip MD5 hashing (fast metadata-only pass)")
     parser.add_argument("--hash-only", action="store_true", help="Only hash files already in DB that have no hash")
     parser.add_argument("--prune",     action="store_true", help="Remove DB rows for files that no longer exist on disk (skips offline volumes)")
+    parser.add_argument("--prune-excluded", action="store_true", help="Remove DB rows now covered by the exclude list (retroactive exclude; compact after)")
     parser.add_argument("--reindex-changed", action="store_true", help="Refresh rows whose on-disk file changed (size/mtime); skips offline volumes")
     parser.add_argument("--db", help="Operate on this DB file instead of the default (used by the web UI to run against a disposable copy)")
     args = parser.parse_args()
@@ -914,6 +971,8 @@ if __name__ == "__main__":
 
     if args.prune:
         prune()
+    elif args.prune_excluded:
+        prune_excluded()
     elif args.reindex_changed:
         reindex_changed(do_hash=not args.no_hash)
     elif args.hash_only:
