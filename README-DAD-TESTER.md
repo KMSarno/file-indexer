@@ -23,8 +23,18 @@ brew install exiftool
 2. Drag **Kendex** to **Applications**.
 3. Open **Kendex**.
 
-If macOS blocks the unsigned test build, right-click the app and choose
-**Open**, then confirm.
+macOS will warn that it cannot verify this unsigned test build:
+
+1. Try to open Kendex once and dismiss the warning.
+2. Open **System Settings → Privacy & Security**, scroll down to the
+   Kendex message, click **Open Anyway**, and confirm.
+
+If macOS instead claims the app is **"damaged"**, clear the download
+quarantine flag in Terminal and open it again:
+
+```bash
+xattr -cr /Applications/Kendex.app
+```
 
 ## First Run
 
@@ -38,3 +48,17 @@ want indexed.
 
 If you add new excludes after a scan, run **Prune excluded** to remove matching
 rows from the existing index, then run **Compact DB** to shrink the database.
+
+## Use an Existing Database (skip the first scan)
+
+If you already have a `files.db` from the browser-based indexer, you can reuse
+a copy of it instead of waiting hours for a first scan:
+
+1. Open Kendex once, then choose **File → Open App Data Folder**.
+2. Quit Kendex.
+3. Copy your existing database into that folder, named exactly `files.db`.
+4. Reopen Kendex — the index is queryable immediately.
+
+Kendex opens this file read-only for queries, and maintenance runs work on a
+disposable copy that is swapped in only on success — your original database
+(wherever you copied it from) is never touched.
