@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, dialog, shell } = require('electron');
+const { app, BrowserWindow, Menu, dialog, powerSaveBlocker, shell } = require('electron');
 const { spawn } = require('child_process');
 const fs = require('fs');
 const http = require('http');
@@ -121,7 +121,21 @@ function progressFromStatus(status) {
   return Math.max(0, Math.min(1, Number(match[1]) / 100));
 }
 
+let sleepBlockerId = null;
+
+// Hold off idle sleep while a maintenance run is active (the crawler can run
+// for hours); released automatically when the run ends or the app quits.
+function updateSleepBlocker(active) {
+  if (active && sleepBlockerId === null) {
+    sleepBlockerId = powerSaveBlocker.start('prevent-app-suspension');
+  } else if (!active && sleepBlockerId !== null) {
+    powerSaveBlocker.stop(sleepBlockerId);
+    sleepBlockerId = null;
+  }
+}
+
 function applyNativeProgress(status) {
+  updateSleepBlocker(!!(status && status.active));
   if (!mainWindow || mainWindow.isDestroyed()) return;
 
   const progress = progressFromStatus(status);
@@ -342,5 +356,6 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   stopProgressPolling();
+  updateSleepBlocker(false);
   stopBackend();
 });
