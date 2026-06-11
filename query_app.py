@@ -392,6 +392,8 @@ def open_path(path, action="open") -> dict:
     global _ql_proc
     if sys.platform != "darwin":
         return {"error": "Open is only supported on macOS."}
+    if action not in ("open", "reveal", "preview"):
+        return {"error": f"unknown action: {action}"}
     if not isinstance(path, str) or not path.startswith("/"):
         return {"error": "expected an absolute path"}
     if not os.path.exists(path):
@@ -402,11 +404,15 @@ def open_path(path, action="open") -> dict:
         if _ql_proc is not None and _ql_proc.poll() is None:
             _ql_proc.terminate()
         try:
-            _ql_proc = subprocess.Popen(["qlmanage", "-p", path],
-                                        stdout=subprocess.DEVNULL,
-                                        stderr=subprocess.DEVNULL)
+            proc = subprocess.Popen(["qlmanage", "-p", path],
+                                    stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL)
         except Exception as e:
             return {"error": f"Quick Look failed: {e}"}
+        _ql_proc = proc
+        # Reap the child whenever the user closes the panel, so a long-running
+        # server doesn't accumulate zombies.
+        threading.Thread(target=proc.wait, daemon=True).start()
         return {"ok": True}
     cmd = ["open", "-R", path] if action == "reveal" else ["open", path]
     try:
@@ -451,10 +457,11 @@ def get_stats() -> dict:
     out["files"] = n
     out["bytes"] = int(total)
     # Every mounted volume (including the boot volume) appears under /Volumes
-    # on macOS, so existence there is a good "is it plugged in" check.
+    # on macOS. Use ismount — matching the crawler's logic — so a stale,
+    # empty mountpoint directory doesn't read as "mounted".
     out["volumes"] = [
         {"name": v or "(unknown)", "files": c,
-         "mounted": bool(v) and os.path.exists("/Volumes/" + v)}
+         "mounted": bool(v) and os.path.ismount("/Volumes/" + v)}
         for v, c in vols
     ]
     return out
@@ -1469,7 +1476,8 @@ async function dupList(md5){
   a.href = URL.createObjectURL(blob);
   a.download = 'dupes_' + md5.slice(0, 8) + '.txt';
   a.click();
-  URL.revokeObjectURL(a.href);
+  // Deferred: revoking synchronously can cancel the download in Chromium.
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
 }
 const locName = document.getElementById('loc-name');
 const locExt  = document.getElementById('loc-ext');
@@ -1853,7 +1861,8 @@ exportBtn.onclick = () => {
   a.href = URL.createObjectURL(blob);
   a.download = 'kendex_results.csv';
   a.click();
-  URL.revokeObjectURL(a.href);
+  // Deferred: revoking synchronously can cancel the download in Chromium.
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
 };
 
 // ---- Index stats strip, volume datalist, offline set, first-run state ----
@@ -2004,7 +2013,8 @@ document.getElementById('dup-export').onclick = () => {
   a.href = URL.createObjectURL(blob);
   a.download = 'kendex_delete_list.txt';
   a.click();
-  URL.revokeObjectURL(a.href);
+  // Deferred: revoking synchronously can cancel the download in Chromium.
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
 };
 document.getElementById('dup-close').onclick = () => { dupModal.hidden = true; };
 
