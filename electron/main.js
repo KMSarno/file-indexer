@@ -82,7 +82,11 @@ function getFreePort() {
   });
 }
 
-function waitForBackend(url, timeoutMs = 30000) {
+// First launch can be slow: `uv run` resolves/builds the project virtualenv
+// before the server binds. That cold start (especially on a fresh install, or
+// the App Translocation copy) routinely exceeds 30s, so give it generous room;
+// warm launches still resolve in a second or two.
+function waitForBackend(url, timeoutMs = 120000) {
   const started = Date.now();
 
   return new Promise((resolve, reject) => {
@@ -293,11 +297,48 @@ async function createWindow() {
   });
 
   mainWindow.once('ready-to-show', () => {
+    closeSplash();
     mainWindow.show();
   });
 
   await mainWindow.loadURL(backendUrl);
   startProgressPolling();
+}
+
+let splashWindow = null;
+
+// A tiny always-on-top window shown immediately at launch, so the first cold
+// start (which can spend a minute building the uv venv before the UI loads)
+// doesn't look like a frozen Dock bounce with no window.
+function showSplash() {
+  splashWindow = new BrowserWindow({
+    width: 380, height: 220, resizable: false, frame: false,
+    show: false, backgroundColor: '#17161b', center: true,
+  });
+  const html = `<!doctype html><meta charset="utf-8"><style>
+    html,body{margin:0;height:100%;font:13px -apple-system,sans-serif;color:#d8d5cf;
+      background:linear-gradient(165deg,#1c1a20,#141318);display:flex;
+      flex-direction:column;align-items:center;justify-content:center;gap:14px;
+      -webkit-user-select:none;cursor:default}
+    .mark{width:46px;height:46px;border-radius:11px;display:grid;place-items:center;
+      background:linear-gradient(145deg,#f4c178,#b87425);color:#221302;
+      font:700 20px ui-monospace,Menlo,monospace}
+    .t{font-weight:600;font-size:15px;color:#eae7e1}
+    .s{color:#97928c;font:11px ui-monospace,Menlo,monospace}
+    .bar{width:200px;height:4px;border-radius:2px;background:#0e0d11;overflow:hidden}
+    .bar i{display:block;width:40%;height:100%;border-radius:2px;
+      background:linear-gradient(90deg,#b87f33,#f3c98c);animation:s 1.3s ease-in-out infinite}
+    @keyframes s{0%{transform:translateX(-120%)}100%{transform:translateX(320%)}}
+  </style><div class="mark">K</div><div class="t">Starting Kendex</div>
+  <div class="bar"><i></i></div>
+  <div class="s">preparing the index engine&hellip;</div>`;
+  splashWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+  splashWindow.once('ready-to-show', () => splashWindow && splashWindow.show());
+}
+
+function closeSplash() {
+  if (splashWindow && !splashWindow.isDestroyed()) splashWindow.close();
+  splashWindow = null;
 }
 
 function stopBackend() {
@@ -421,15 +462,18 @@ function installMenu() {
 
 app.whenReady().then(async () => {
   installMenu();
+  const smoke = process.env.FILE_INDEXER_ELECTRON_SMOKE === '1';
+  if (!smoke) showSplash();
   try {
     await startBackend();
-    if (process.env.FILE_INDEXER_ELECTRON_SMOKE === '1') {
+    if (smoke) {
       console.log(`Smoke test backend ready at ${backendUrl}`);
       app.quit();
       return;
     }
     await createWindow();
   } catch (error) {
+    closeSplash();
     dialog.showErrorBox('Kendex failed to start', error.stack || String(error));
     app.quit();
   }
