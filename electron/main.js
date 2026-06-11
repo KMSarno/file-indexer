@@ -14,7 +14,7 @@ let progressTimer = null;
 
 function projectRoot() {
   if (app.isPackaged) {
-    return process.resourcesPath;
+    return path.join(process.resourcesPath, 'backend');
   }
   return path.resolve(__dirname, '..');
 }
@@ -170,11 +170,15 @@ async function startBackend() {
 
   const root = projectRoot();
   const dbPath = defaultDbPath();
+  const uvStateDir = path.join(app.getPath('userData'), 'uv');
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+  fs.mkdirSync(uvStateDir, { recursive: true });
 
   const env = {
     ...process.env,
     FILE_INDEXER_DB: dbPath,
+    UV_CACHE_DIR: path.join(uvStateDir, 'cache'),
+    UV_PROJECT_ENVIRONMENT: path.join(uvStateDir, 'venv'),
     PATH: [
       '/opt/homebrew/bin',
       '/usr/local/bin',

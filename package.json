@@ -8,9 +8,51 @@
     "start": "electron .",
     "dev": "electron .",
     "smoke": "FILE_INDEXER_ELECTRON_SMOKE=1 electron .",
-    "check": "node --check electron/main.js && python3 -m py_compile crawler.py query_app.py compact_db.py"
+    "check": "node --check electron/main.js && python3 -m py_compile crawler.py query_app.py compact_db.py",
+    "dist": "electron-builder --mac dmg zip"
+  },
+  "build": {
+    "appId": "com.fileindexer.desktop",
+    "productName": "File Indexer",
+    "artifactName": "${productName}-${version}-${arch}.${ext}",
+    "asar": true,
+    "files": [
+      "electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "crawler.py",
+        "to": "backend/crawler.py"
+      },
+      {
+        "from": "query_app.py",
+        "to": "backend/query_app.py"
+      },
+      {
+        "from": "compact_db.py",
+        "to": "backend/compact_db.py"
+      },
+      {
+        "from": "pyproject.toml",
+        "to": "backend/pyproject.toml"
+      },
+      {
+        "from": "uv.lock",
+        "to": "backend/uv.lock"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.utilities",
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "identity": null
+    }
   },
   "devDependencies": {
-    "electron": "^31.7.7"
+    "electron": "^31.7.7",
+    "electron-builder": "^24.13.3"
   }
 }
