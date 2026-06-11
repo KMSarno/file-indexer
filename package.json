@@ -15,8 +15,13 @@
     "appId": "com.kendex.desktop",
     "productName": "Kendex",
     "artifactName": "${productName}-${version}-${arch}.${ext}",
-    "afterPack": "scripts/adhoc-sign.js",
+    "afterSign": "scripts/notarize.js",
     "asar": true,
+    "publish": {
+      "provider": "github",
+      "owner": "KMSarno",
+      "repo": "file-indexer"
+    },
     "files": [
       "electron/**/*",
       "package.json"
@@ -50,10 +55,17 @@
         "dmg",
         "zip"
       ],
-      "identity": null
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist"
     }
   },
+  "dependencies": {
+    "electron-updater": "^6.8.9"
+  },
   "devDependencies": {
+    "@electron/notarize": "^2.5.0",
     "electron": "^31.7.7",
     "electron-builder": "^24.13.3"
   }

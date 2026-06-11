@@ -53,11 +53,45 @@ npm run smoke   # boots the backend through Electron and exits
 npm run dist    # DMG + ZIP in dist/
 ```
 
-Builds are ad-hoc signed (an `afterPack` hook re-signs the bundle), so
-Gatekeeper shows the one-time *unverified developer* flow — **System Settings →
-Privacy & Security → Open Anyway** — rather than a dead-end "damaged" error.
-Tester install steps, including how to seed the app with an existing
-`files.db`, live in [README-DAD-TESTER.md](README-DAD-TESTER.md).
+Release builds are **Developer-ID signed and notarized** by CI, so they open
+without any Gatekeeper warning. A local `npm run dist` signs with whatever
+Developer ID is in your keychain (and notarizes only when the `APPLE_API_*`
+environment variables are set — see `scripts/notarize.js`); without a
+certificate it still builds, just unsigned. Tester install steps, including how
+to seed the app with an existing `files.db`, live in
+[README-DAD-TESTER.md](README-DAD-TESTER.md).
+
+### Tagged releases (CI)
+
+Pushing a `v*` tag builds, signs, notarizes, and publishes the Apple Silicon
+DMG + ZIP to a GitHub Release on a macOS arm64 runner
+(`.github/workflows/release.yml`):
+
+```bash
+git tag v0.2.5
+git push origin v0.2.5
+```
+
+The workflow syncs the package version to the tag (so the bump and tag can't
+drift) and uploads the `latest-mac.yml` feed alongside the artifacts, which is
+what the in-app auto-updater reads. It needs these repository secrets:
+
+| Secret | What it is |
+|---|---|
+| `MAC_CERT_P12` | base64 of the exported **Developer ID Application** `.p12` |
+| `MAC_CERT_PASSWORD` | the password used when exporting that `.p12` |
+| `APPLE_API_KEY_P8` | base64 of the App Store Connect API key `.p8` |
+| `APPLE_API_KEY_ID` | the API key's Key ID |
+| `APPLE_API_ISSUER` | the API key's Issuer ID |
+| `APPLE_TEAM_ID` | your 10-character Apple Team ID |
+
+### Auto-update
+
+The installed app checks GitHub Releases on launch and once a day. A new
+version downloads in the background and installs the next time you quit
+(never mid-scan); **Kendex → Restart & Update Now** applies it immediately, and
+**Check for Updates…** runs a manual check. Auto-update only runs in a packaged,
+signed build.
 
 To point the app at a specific database instead of its own:
 
