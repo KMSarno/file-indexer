@@ -701,7 +701,35 @@ PAGE = """<!doctype html>
     box-shadow: inset 0 2px 5px rgba(0,0,0,.35);
   }
   #side button:disabled { pointer-events: none; }
-  #presets button, #user-presets button { --accent-rgb: var(--cyan-rgb); }
+  #user-presets button { --accent-rgb: var(--cyan-rgb); }
+  /* Sample queries collapsed into one dropdown (loads + runs on select). */
+  #presets {
+    width: 100%; margin: 0 0 4px; min-height: 34px; padding: 6px 30px 6px 11px;
+    font: inherit; color: var(--btn-text); cursor: pointer;
+    border: 1px solid var(--btn-line); border-radius: 8px;
+    box-shadow: var(--btn-shadow); -webkit-appearance: none; appearance: none;
+    background:
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath fill='%23919691' d='M0 0l5 6 5-6z'/%3E%3C/svg%3E")
+        no-repeat right 11px center,
+      linear-gradient(180deg, rgba(255,255,255,.035), rgba(255,255,255,0) 60%), var(--btn-face);
+  }
+  #presets:hover { border-color: rgba(var(--cyan-rgb), .28); }
+  /* Collapsible "Maintenance" group: rarely-used / destructive actions tucked
+     away so the everyday Fast scan / Backfill / Scan stay one click. */
+  .maint-more { margin: 0 0 4px; }
+  .maint-more > summary {
+    list-style: none; display: flex; align-items: center; gap: 9px;
+    min-height: 32px; padding: 6px 10px; margin: 0 0 4px; cursor: pointer;
+    border: 1px solid var(--btn-line); border-radius: 8px; color: var(--btn-text);
+    background: linear-gradient(180deg, rgba(255,255,255,.035), rgba(255,255,255,0) 60%), var(--btn-face);
+    box-shadow: var(--btn-shadow);
+  }
+  .maint-more > summary::-webkit-details-marker { display: none; }
+  .maint-more > summary::before {
+    content: "\\25B8"; font-size: 10px; color: var(--muted); width: 7px; flex: none;
+  }
+  .maint-more[open] > summary::before { content: "\\25BE"; }
+  .maint-more > summary:hover { border-color: rgba(var(--amber-rgb), .28); }
   #user-presets button .preset-del {
     margin-left: auto; padding: 0 5px; border-radius: 4px;
     color: var(--muted); opacity: 0; transition: opacity .12s ease;
@@ -1155,18 +1183,23 @@ PAGE = """<!doctype html>
     </div>
   </div>
   <h3>Queries</h3>
-  <div id="presets"></div>
+  <select id="presets" aria-label="Sample queries">
+    <option value="" disabled selected>Sample queries&hellip;</option>
+  </select>
   <div id="user-presets"></div>
   <h3>Indexing</h3>
   <div id="maint">
     <button data-mode="scan_fast" title="Metadata-only sweep (no content hashing) — fast first index">Fast scan (no hashes)</button>
     <button data-mode="hash_backfill" title="Hash files the fast scan skipped, smallest first — enables the duplicate manager">Backfill hashes</button>
-    <button data-mode="reindex">Reindex changed</button>
     <button data-mode="scan">Scan for new</button>
-    <button data-mode="prune">Prune deleted</button>
-    <button data-mode="prune_excluded">Prune excluded</button>
-    <button data-mode="sync">Full sync (all 3)</button>
-    <button data-mode="compact">Compact DB</button>
+    <details class="maint-more">
+      <summary>Maintenance</summary>
+      <button data-mode="reindex">Reindex changed</button>
+      <button data-mode="prune">Prune deleted</button>
+      <button data-mode="prune_excluded">Prune excluded</button>
+      <button data-mode="sync">Full sync (all 3)</button>
+      <button data-mode="compact">Compact DB</button>
+    </details>
   </div>
   <h3>Tools</h3>
   <div id="tools">
@@ -1304,11 +1337,15 @@ themeBtn.onclick = () => {
 
 const presetsEl = document.getElementById('presets');
 for (const [name, q] of PRESETS) {
-  const b = document.createElement('button');
-  b.textContent = name;
-  b.onclick = () => { sql.value = q; run(); };
-  presetsEl.appendChild(b);
+  const o = document.createElement('option');
+  o.value = name; o.textContent = name;
+  presetsEl.appendChild(o);
 }
+presetsEl.onchange = () => {
+  const hit = PRESETS.find(([name]) => name === presetsEl.value);
+  if (hit) { sql.value = hit[1]; run(); }
+  presetsEl.selectedIndex = 0;   // snap back to the "Sample queries…" label
+};
 
 function isNum(v){ return typeof v === 'number'; }
 
