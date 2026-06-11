@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#27252c"/>
+      <stop offset=".55" stop-color="#17161b"/>
+      <stop offset="1" stop-color="#100f13"/>
+    </linearGradient>
+    <linearGradient id="amberV" gradientUnits="userSpaceOnUse" x1="0" y1="286" x2="0" y2="746">
+      <stop offset="0" stop-color="#f2bc72"/>
+      <stop offset=".6" stop-color="#d9933c"/>
+      <stop offset="1" stop-color="#a96518"/>
+    </linearGradient>
+    <linearGradient id="cap" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f9d390"/>
+      <stop offset="1" stop-color="#e8a654"/>
+    </linearGradient>
+    <linearGradient id="byte" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#b9e7f3"/>
+      <stop offset="1" stop-color="#4ba3bd"/>
+    </linearGradient>
+    <radialGradient id="glow" cx=".5" cy=".5" r=".5">
+      <stop offset="0" stop-color="#e8a654" stop-opacity=".11"/>
+      <stop offset="1" stop-color="#e8a654" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="ground" cx=".5" cy=".5" r=".5">
+      <stop offset="0" stop-color="#000000" stop-opacity=".32"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0"/>
+    </radialGradient>
+    <clipPath id="sq"><rect x="96" y="96" width="832" height="832" rx="186"/></clipPath>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="16" stdDeviation="26" flood-color="#000000" flood-opacity="0.45"/>
+    </filter>
+  </defs>
+  <rect x="96" y="96" width="832" height="832" rx="186" fill="url(#bg)" filter="url(#shadow)"/>
+  <g clip-path="url(#sq)">
+    <g stroke="#ffffff" stroke-opacity=".04" stroke-width="2">
+      <path d="M200 96V928M304 96V928M408 96V928M512 96V928M616 96V928M720 96V928M824 96V928"/>
+      <path d="M96 200H928M96 304H928M96 408H928M96 512H928M96 616H928M96 720H928M96 824H928"/>
+    </g>
+    <rect x="96" y="97" width="832" height="3" fill="#ffffff" opacity=".14"/>
+    <circle cx="516" cy="512" r="360" fill="url(#glow)"/>
+    <ellipse cx="512" cy="794" rx="300" ry="46" fill="url(#ground)"/>
+
+    <g transform="translate(10,0)">
+    <!-- diagonals: register-size squares (near grid pitch), one shared
+         amber junction cell where the arms meet the stack -->
+    <rect x="449" y="473" width="78" height="78" rx="11" fill="url(#cap)"/>
+    <g>
+      <rect x="545" y="377" width="78" height="78" rx="11" fill="url(#byte)"/>
+      <rect x="641" y="281" width="78" height="78" rx="11" fill="url(#byte)"/>
+    </g>
+    <g>
+      <rect x="545" y="569" width="78" height="78" rx="11" fill="url(#byte)"/>
+      <rect x="641" y="665" width="78" height="78" rx="11" fill="url(#byte)"/>
+    </g>
+
+    <!-- stem: stack of four disc platters with visible air between -->
+    <g>
+      <rect x="306" y="300" width="124" height="86" fill="url(#amberV)"/>
+      <path d="M306 386 a62 18 0 0 0 124 0" fill="url(#amberV)"/>
+      <ellipse cx="368" cy="300" rx="62" ry="18" fill="url(#cap)"/>
+
+      <rect x="306" y="414" width="124" height="86" fill="url(#amberV)"/>
+      <path d="M306 500 a62 18 0 0 0 124 0" fill="url(#amberV)"/>
+      <ellipse cx="368" cy="414" rx="62" ry="18" fill="url(#cap)"/>
+
+      <rect x="306" y="528" width="124" height="86" fill="url(#amberV)"/>
+      <path d="M306 614 a62 18 0 0 0 124 0" fill="url(#amberV)"/>
+      <ellipse cx="368" cy="528" rx="62" ry="18" fill="url(#cap)"/>
+
+      <rect x="306" y="642" width="124" height="86" fill="url(#amberV)"/>
+      <path d="M306 728 a62 18 0 0 0 124 0" fill="url(#amberV)"/>
+      <ellipse cx="368" cy="642" rx="62" ry="18" fill="url(#cap)"/>
+    </g>
+    <rect x="306" y="300" width="12" height="446" fill="#ffffff" opacity=".1"/>
+    </g>
+  </g>
+</svg>

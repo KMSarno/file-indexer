@@ -377,21 +377,44 @@ def _jsonable(v):
     return str(v)
 
 
-def open_path(path, reveal=False) -> dict:
-    """Open an indexed file with its macOS default app, or reveal it in Finder.
+_ql_proc = None  # the live Quick Look panel, so a new preview replaces it
+
+
+def open_path(path, action="open") -> dict:
+    """Open an indexed file (macOS default app), reveal it in Finder, or
+    Quick Look it ("preview").
 
     Same threat model as the other POST handlers (localhost-only Host check,
     JSON content-type so cross-origin pages can't POST without a preflight).
-    The path goes to `open` as an argv element — no shell — and only files
-    that actually exist on disk are opened.
+    The path goes to `open`/`qlmanage` as an argv element — no shell — and
+    only files that actually exist on disk are opened.
     """
+    global _ql_proc
     if sys.platform != "darwin":
         return {"error": "Open is only supported on macOS."}
+    if action not in ("open", "reveal", "preview"):
+        return {"error": f"unknown action: {action}"}
     if not isinstance(path, str) or not path.startswith("/"):
         return {"error": "expected an absolute path"}
     if not os.path.exists(path):
         return {"error": "Not found on disk — volume offline, or index out of date?"}
-    cmd = ["open", "-R", path] if reveal else ["open", path]
+    if action == "preview":
+        # qlmanage blocks while its panel is open, so spawn detached; closing
+        # the previous panel first keeps space-bar browsing snappy.
+        if _ql_proc is not None and _ql_proc.poll() is None:
+            _ql_proc.terminate()
+        try:
+            proc = subprocess.Popen(["qlmanage", "-p", path],
+                                    stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL)
+        except Exception as e:
+            return {"error": f"Quick Look failed: {e}"}
+        _ql_proc = proc
+        # Reap the child whenever the user closes the panel, so a long-running
+        # server doesn't accumulate zombies.
+        threading.Thread(target=proc.wait, daemon=True).start()
+        return {"ok": True}
+    cmd = ["open", "-R", path] if action == "reveal" else ["open", path]
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
     except Exception as e:
@@ -399,6 +422,49 @@ def open_path(path, reveal=False) -> dict:
     if proc.returncode != 0:
         return {"error": (proc.stderr or "open failed").strip()}
     return {"ok": True}
+
+
+def get_stats() -> dict:
+    """Index-level stats for the status strip: row count, total bytes,
+    per-volume counts with mounted state, and the last successful sync time
+    (files.db's mtime — the file is only replaced when a run commits)."""
+    if not os.path.exists(DB_PATH):
+        return {"no_db": True}
+    out = {"no_db": False}
+    try:
+        mtime = os.path.getmtime(DB_PATH)
+        out["synced_at"] = (datetime.fromtimestamp(mtime, tz=timezone.utc)
+                            .astimezone().strftime("%Y-%m-%d %H:%M"))
+        out["synced_age_days"] = round(
+            (datetime.now(tz=timezone.utc).timestamp() - mtime) / 86400, 1)
+    except OSError:
+        pass
+    with _lock:
+        if _con is None:
+            out["error"] = "db briefly unavailable"
+            return out
+        try:
+            cur = _con.cursor()
+            n, total = cur.execute(
+                "SELECT count(*), coalesce(sum(size_bytes), 0) FROM files"
+            ).fetchone()
+            vols = cur.execute(
+                "SELECT volume, count(*) FROM files "
+                "GROUP BY volume ORDER BY count(*) DESC").fetchall()
+        except Exception as exc:
+            out["error"] = f"{type(exc).__name__}: {exc}"
+            return out
+    out["files"] = n
+    out["bytes"] = int(total)
+    # Every mounted volume (including the boot volume) appears under /Volumes
+    # on macOS. Use ismount — matching the crawler's logic — so a stale,
+    # empty mountpoint directory doesn't read as "mounted".
+    out["volumes"] = [
+        {"name": v or "(unknown)", "files": c,
+         "mounted": bool(v) and os.path.ismount("/Volumes/" + v)}
+        for v, c in vols
+    ]
+    return out
 
 
 PAGE = """<!doctype html>
@@ -624,7 +690,13 @@ PAGE = """<!doctype html>
     box-shadow: inset 0 2px 5px rgba(0,0,0,.35);
   }
   #side button:disabled { pointer-events: none; }
-  #presets button { --accent-rgb: var(--cyan-rgb); }
+  #presets button, #user-presets button { --accent-rgb: var(--cyan-rgb); }
+  #user-presets button .preset-del {
+    margin-left: auto; padding: 0 5px; border-radius: 4px;
+    color: var(--muted); opacity: 0; transition: opacity .12s ease;
+  }
+  #user-presets button:hover .preset-del { opacity: 1; }
+  #user-presets button .preset-del:hover { color: var(--err); }
   #maint button { --accent-rgb: var(--amber-rgb); }
   #maint button[data-mode="sync"] {       /* the headline "do everything" action */
     border-color: rgba(var(--amber-rgb), .35);
@@ -692,7 +764,30 @@ PAGE = """<!doctype html>
     border-color: rgba(var(--cyan-rgb), .6);
     box-shadow: 0 0 0 3px rgba(var(--cyan-rgb), .12);
   }
-  #bar { margin: 10px 0 8px; display: flex; gap: 12px; align-items: center; flex: none; }
+  #stats {
+    display: flex; flex-wrap: wrap; gap: 4px 16px; align-items: center;
+    margin: 0 0 8px; flex: none; min-height: 15px;
+    font: 11px var(--mono); color: var(--muted); letter-spacing: .03em;
+    cursor: default;
+  }
+  #stats .warn { color: var(--busy-text); }
+  #bar { margin: 10px 0 8px; display: flex; gap: 10px; align-items: center; flex: none; }
+  .bar-btn {
+    min-height: 30px; padding: 4px 11px; border-radius: 7px; cursor: pointer;
+    border: 1px solid var(--line); background: var(--modal-btn);
+    color: var(--text); font-size: 12.5px;
+    transition: border-color .12s ease;
+  }
+  .bar-btn:hover { border-color: var(--rule); }
+  #status { margin-right: auto; }
+  #filterbox {
+    min-height: 30px; padding: 4px 11px; width: 170px;
+    border: 1px solid var(--line); border-radius: 7px;
+    background: var(--field); color: var(--text); outline: none;
+    font-size: 12.5px; caret-color: var(--cyan);
+    transition: border-color .12s ease, box-shadow .12s ease;
+  }
+  #export-csv { display: none; }
   #run, #locate button {
     display: inline-flex; align-items: center; gap: 8px;
     min-height: 34px; padding: 6px 16px; border-radius: 8px;
@@ -819,6 +914,8 @@ PAGE = """<!doctype html>
   td.num { text-align: right; }
   #out tr:nth-child(even) td { background: var(--zebra); }
   #out tr:hover td { background: rgba(var(--cyan-rgb), .1); }
+  #out tr.sel td { background: rgba(var(--cyan-rgb), .18); }
+  #out tr.offline td { opacity: .45; }
   .err { color: var(--err); padding: 14px 16px; white-space: pre-wrap;
          font: 12.5px/1.6 var(--mono); }
 
@@ -926,6 +1023,75 @@ PAGE = """<!doctype html>
       linear-gradient(rgba(var(--amber-rgb), .18), rgba(var(--amber-rgb), .06)) border-box;
     animation: scan-border 4s linear infinite;
   }
+  /* ---- row inspector ---- */
+  #inspect {
+    flex: none; max-height: 200px; overflow: auto; margin: 10px 0 0;
+    border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px;
+    background: var(--strip-bg);
+  }
+  #inspect[hidden] { display: none; }
+  #inspect-head {
+    display: flex; align-items: center; gap: 8px; margin: 0 0 8px;
+  }
+  #inspect-title {
+    font: 600 12px var(--mono); color: var(--text);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    margin-right: auto;
+  }
+  #inspect-head button {
+    min-height: 24px; padding: 2px 9px; border-radius: 6px; cursor: pointer;
+    border: 1px solid var(--line); background: var(--modal-btn);
+    color: var(--text); font-size: 11.5px;
+  }
+  #inspect-head button:hover { border-color: rgba(var(--cyan-rgb), .5); }
+  #inspect-grid {
+    display: grid; grid-template-columns: max-content 1fr; gap: 3px 16px;
+    font: 12px/1.5 var(--mono);
+  }
+  #inspect-grid .k { color: var(--muted); }
+  #inspect-grid .v { color: var(--cell); word-break: break-all; }
+
+  /* ---- first run: no database yet ---- */
+  body.nodb #out:empty::before {
+    content: "no index yet — review Edit exclude list, then run Scan for new (the first scan can take hours)";
+  }
+
+  /* ---- duplicate manager ---- */
+  #dupmodal {
+    position: fixed; inset: 0; z-index: 50;
+    background: rgba(10,9,12,.55); backdrop-filter: blur(7px);
+    display: flex; align-items: center; justify-content: center;
+  }
+  #dupmodal[hidden] { display: none; }
+  #dupmodal-panel {
+    background: var(--modal-bg); color: var(--text);
+    border: 1px solid var(--line); border-radius: 12px;
+    padding: 20px; width: 820px; max-width: 94vw;
+    max-height: 88vh; overflow: auto; display: flex; flex-direction: column;
+    box-shadow: 0 30px 80px rgba(0,0,0,.5);
+  }
+  #dupmodal-panel h3 { margin: 0 0 6px; font-size: 15px; }
+  #dup-tools {
+    display: flex; gap: 8px; align-items: center; margin: 0 0 10px; flex: none;
+  }
+  #dup-summary { font: 11.5px var(--mono); color: var(--muted); margin-left: auto; }
+  #dup-list {
+    flex: 1; overflow: auto; border: 1px solid var(--line-soft);
+    border-radius: 8px; background: var(--field); padding: 4px 10px;
+    font: 12px/1.6 var(--mono); min-height: 120px;
+  }
+  .dup-head {
+    margin: 10px 0 4px; padding-top: 8px; border-top: 1px solid var(--line-soft);
+    color: var(--text); font-weight: 600;
+  }
+  .dup-head:first-child { border-top: none; margin-top: 2px; }
+  .dup-head .waste { color: var(--busy-text); font-weight: 400; }
+  .dup-row { display: flex; gap: 8px; align-items: baseline; }
+  .dup-row input[type="checkbox"] { accent-color: var(--red); }
+  .dup-row .p { word-break: break-all; color: var(--cell); }
+  .dup-row .m { color: var(--muted); flex: none; }
+  .dup-row input:checked ~ .p { text-decoration: line-through; opacity: .6; }
+
   /* ---- row context menu (Open / Reveal / Copy) ---- */
   #ctxmenu {
     position: fixed; z-index: 60; min-width: 180px; padding: 4px;
@@ -960,6 +1126,7 @@ PAGE = """<!doctype html>
   </div>
   <h3>Queries</h3>
   <div id="presets"></div>
+  <div id="user-presets"></div>
   <h3>Indexing</h3>
   <div id="maint">
     <button data-mode="reindex">Reindex changed</button>
@@ -971,6 +1138,7 @@ PAGE = """<!doctype html>
   </div>
   <h3>Tools</h3>
   <div id="tools">
+    <button id="dupes-open">Duplicate manager</button>
     <button id="edit-excludes">Edit exclude list</button>
     <button id="clearlog">Clear output</button>
   </div>
@@ -985,6 +1153,7 @@ PAGE = """<!doctype html>
   </div>
 </div>
 <div id="main">
+  <div id="stats" title="Click to refresh"></div>
   <fieldset id="locate">
     <legend>Locate files</legend>
     <select id="loc-kind">
@@ -1002,18 +1171,34 @@ PAGE = """<!doctype html>
       <option value="in">volume is</option>
       <option value="notin">volume is not</option>
     </select>
-    <input id="loc-vol" size="18" placeholder="TB5_DOCK8, OWC HD1">
+    <input id="loc-vol" size="18" placeholder="TB5_DOCK8, OWC HD1" list="vol-list">
+    <datalist id="vol-list"></datalist>
     <button id="loc-go">Locate &#9654;</button>
   </fieldset>
   <textarea id="sql" spellcheck="false"
     placeholder="SELECT * FROM files LIMIT 100"></textarea>
   <div id="bar">
     <button id="run" title="Ctrl/Cmd + Enter">Run query <kbd>&#8984;&#9166;</kbd></button>
+    <button id="savequery" class="bar-btn" title="Save the SQL box as a sidebar preset">Save query</button>
     <span id="status"></span>
+    <input id="filterbox" placeholder="filter results&hellip;" title="Narrow the loaded rows (client-side)">
+    <button id="export-csv" class="bar-btn" title="Download the visible rows as CSV">Export CSV</button>
   </div>
   <div id="run-progress" aria-hidden="true"><div></div></div>
   <div id="pathbox"></div>
   <div id="out"></div>
+  <div id="inspect" hidden>
+    <div id="inspect-head">
+      <span id="inspect-title"></span>
+      <button data-act="open">Open</button>
+      <button data-act="preview">Quick Look</button>
+      <button data-act="reveal">Reveal</button>
+      <button data-act="copy">Copy path</button>
+      <button id="inspect-dupes" hidden>List copies</button>
+      <button id="inspect-close" title="Close">&#10005;</button>
+    </div>
+    <div id="inspect-grid"></div>
+  </div>
   <pre id="log"></pre>
 </div>
 <div id="exmodal" hidden>
@@ -1035,8 +1220,28 @@ PAGE = """<!doctype html>
 </div>
 <div id="ctxmenu" hidden>
   <button data-act="open">Open</button>
+  <button data-act="preview">Quick Look</button>
   <button data-act="reveal">Reveal in Finder</button>
   <button data-act="copy">Copy path</button>
+</div>
+<div id="dupmodal" hidden>
+  <div id="dupmodal-panel">
+    <h3>Duplicate manager</h3>
+    <p class="ex-note">Top duplicate groups by wasted space (largest first).
+      Tick the copies you want to delete &mdash; at least one copy of every file
+      must stay unticked. Export produces a path list to review and feed to
+      <b>rm</b> / <b>xargs</b>; Kendex never deletes anything itself.</p>
+    <div id="dup-tools">
+      <button id="dup-newest" class="bar-btn">Keep newest in every group</button>
+      <button id="dup-clear" class="bar-btn">Clear all marks</button>
+      <span id="dup-summary"></span>
+    </div>
+    <div id="dup-list"></div>
+    <div class="ex-btns">
+      <button id="dup-export">Export deletion list</button>
+      <button id="dup-close">Close</button>
+    </div>
+  </div>
 </div>
 <script>
 const PRESETS = __PRESETS__;
@@ -1071,6 +1276,10 @@ function isNum(v){ return typeof v === 'number'; }
 
 let lastData = null;          // most recent result set, for re-sorting in place
 let sortCol = -1, sortDir = 0;   // dir: -1 desc, +1 asc, 0 unsorted
+let offlineVols = new Set();  // indexed volumes that aren't mounted right now
+let selTr = null;             // currently selected result row
+const exportBtn = document.getElementById('export-csv');
+const filterBox = document.getElementById('filterbox');
 
 // Compare two cell values: numeric if both numbers, else case-insensitive
 // natural string order. Nulls always sort last, regardless of direction.
@@ -1091,6 +1300,17 @@ function sortBy(col){
   renderTable();
 }
 
+function fmtBytes(n){
+  if (typeof n !== 'number' || !isFinite(n)) return n;
+  if (n < 1024) return n + ' B';
+  const u = ['KB','MB','GB','TB','PB'];
+  let v = n, i = -1;
+  do { v /= 1024; i++; } while (v >= 1024 && i < u.length - 1);
+  return v.toFixed(v >= 100 ? 0 : 1) + ' ' + u[i];
+}
+const isByteCol = c => /bytes|size/i.test(c);
+const DATETIME_RE = /^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}$/;
+
 function renderTable(){
   const data = lastData;
   out.innerHTML = '';
@@ -1106,44 +1326,87 @@ function renderTable(){
     thead.appendChild(th);
   });
   t.appendChild(thead);
-  // If the result carries an md5 column (e.g. the Duplicate-files preset),
-  // clicking a row offers to download the full path list of that md5's copies.
-  const md5Idx = data.columns.indexOf('md5');
+  const volIdx = data.columns.indexOf('volume');
   for (const row of data.rows) {
     const tr = document.createElement('tr');
     // Show the row's path in the readout pane on hover. Works for any column
     // holding a path (path, example, etc.): first cell that looks like one.
     const p = row.find(v => typeof v === 'string' && v.startsWith('/'));
+    tr._row = row;
+    tr._path = p;
+    tr._txt = row.map(v => v === null ? '' : String(v)).join(' ').toLowerCase();
     if (p !== undefined) {
       tr.onmouseenter = () => { pathbox.textContent = p; };
-      tr.oncontextmenu = e => showCtx(e, p);
+      tr.oncontextmenu = e => { selectRow(tr); showCtx(e, p); };
     }
-    if (md5Idx !== -1 && typeof row[md5Idx] === 'string') {
-      tr.style.cursor = 'pointer';
-      tr.title = 'Click to download the full path list of all copies of this file';
-      tr.onclick = () => dupList(row[md5Idx]);
+    tr.onclick = () => selectRow(tr === selTr ? null : tr);
+    // Dim rows whose volume isn't currently mounted (set by /api/stats).
+    const vol = (volIdx !== -1 && typeof row[volIdx] === 'string') ? row[volIdx]
+      : (p && p.startsWith('/Volumes/') ? p.split('/')[2] : null);
+    if (vol && offlineVols.has(vol)) {
+      tr.classList.add('offline');
+      tr.title = 'volume "' + vol + '" is not mounted';
     }
-    for (const v of row) {
+    row.forEach((v, i) => {
       const td = document.createElement('td');
       if (isNum(v)) td.className = 'num';
-      td.textContent = v === null ? '∅' : v;
+      if (v === null) {
+        td.textContent = '∅';
+      } else if (isNum(v) && isByteCol(data.columns[i])) {
+        td.textContent = fmtBytes(v);            // raw value stays in the title
+        td.title = v.toLocaleString() + ' bytes';
+      } else if (typeof v === 'string' && DATETIME_RE.test(v)) {
+        td.textContent = v.slice(0, 16);         // drop :seconds for scanning
+        td.title = v;
+      } else {
+        td.textContent = v;
+      }
       tr.appendChild(td);
-    }
+    });
     t.appendChild(tr);
   }
   out.appendChild(t);
+  selectRow(null);
+  exportBtn.style.display = data.rows.length ? '' : 'none';
   // Retrigger the brief border settle-flash so each new result set lands
   // with a pulse, then the pane goes still for reading.
   out.classList.remove('settle');
   void out.offsetWidth;
   out.classList.add('settle');
-  status.textContent = data.rows.length + ' rows' +
-    (data.truncated ? ' (capped at ' + __MAX_ROWS__ + ')' : '');
+  applyFilter();
 }
 
+function updateStatusCount(shown){
+  if (!lastData) return;
+  const total = lastData.rows.length;
+  let txt = (shown === total) ? total + ' rows' : shown + ' of ' + total + ' rows';
+  if (lastData.truncated) txt += ' (capped at ' + __MAX_ROWS__ + ')';
+  status.textContent = txt;
+}
+
+// Client-side narrowing of the loaded rows (matches raw cell values).
+function applyFilter(){
+  if (!lastData) return;
+  const q = filterBox.value.trim().toLowerCase();
+  let shown = 0;
+  const trs = out.querySelectorAll('table tr');
+  trs.forEach((tr, i) => {
+    if (i === 0) return;  // header row
+    const hit = !q || tr._txt.includes(q);
+    tr.style.display = hit ? '' : 'none';
+    if (hit) shown++;
+    else if (tr === selTr) selectRow(null);
+  });
+  updateStatusCount(shown);
+}
+filterBox.oninput = applyFilter;
+
 async function run() {
+  pushHistory(sql.value);
   status.textContent = 'Running…';
   out.innerHTML = '';
+  selectRow(null);
+  exportBtn.style.display = 'none';
   let data;
   try {
     const r = await fetch('/api/query', {
@@ -1171,6 +1434,14 @@ async function run() {
 document.getElementById('run').onclick = run;
 sql.addEventListener('keydown', e => {
   if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); run(); }
+  else if ((e.ctrlKey || e.metaKey) && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+    if (!sqlHist.length) return;   // Cmd+Up/Down cycles past queries
+    e.preventDefault();
+    histIdx = (e.key === 'ArrowUp')
+      ? Math.min(histIdx + 1, sqlHist.length - 1)
+      : Math.max(histIdx - 1, -1);
+    sql.value = histIdx === -1 ? '' : sqlHist[sqlHist.length - 1 - histIdx];
+  }
 });
 
 // ---- Locate Files: build SQL from the form, show it in the box, run it ----
@@ -1205,7 +1476,8 @@ async function dupList(md5){
   a.href = URL.createObjectURL(blob);
   a.download = 'dupes_' + md5.slice(0, 8) + '.txt';
   a.click();
-  URL.revokeObjectURL(a.href);
+  // Deferred: revoking synchronously can cancel the download in Chromium.
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
 }
 const locName = document.getElementById('loc-name');
 const locExt  = document.getElementById('loc-ext');
@@ -1283,28 +1555,28 @@ document.addEventListener('click', hideCtx);
 document.addEventListener('keydown', e => { if (e.key === 'Escape') hideCtx(); });
 out.addEventListener('scroll', hideCtx);
 
-ctxMenu.onclick = async (e) => {
-  const act = e.target.dataset && e.target.dataset.act;
-  if (!act || !ctxPath) return;
-  hideCtx();
-  if (act === 'copy') {
-    try {
-      await navigator.clipboard.writeText(ctxPath);
-      status.textContent = 'Path copied.';
-    } catch (err) {
-      prompt('Copy the path:', ctxPath);
-    }
-    return;
-  }
+async function fileAction(path, action){
   let d;
   try {
     const r = await fetch('/api/open', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({path: ctxPath, reveal: act === 'reveal'})
+      body: JSON.stringify({path: path, action: action})
     });
     d = await r.json();
   } catch (err) { alert('Request failed: ' + err); return; }
   if (d.error) alert(d.error);
+}
+function copyPath(p){
+  navigator.clipboard.writeText(p).then(
+    () => { status.textContent = 'Path copied.'; },
+    () => { prompt('Copy the path:', p); });
+}
+ctxMenu.onclick = (e) => {
+  const act = e.target.dataset && e.target.dataset.act;
+  if (!act || !ctxPath) return;
+  hideCtx();
+  if (act === 'copy') copyPath(ctxPath);
+  else fileAction(ctxPath, act);
 };
 
 // ---- Maintenance (runs crawler.py against a disposable copy of files.db) ----
@@ -1365,6 +1637,10 @@ clearBtn.onclick = () => {
   out.innerHTML = '';
   status.textContent = '';
   pathbox.textContent = '';
+  lastData = null;
+  filterBox.value = '';
+  exportBtn.style.display = 'none';
+  selectRow(null);
   logAnchor = log.textContent ? log.textContent.slice(-300) : null;
   log.textContent = '';
   if (!runActive) {  // nothing scrolling — return to the (now blank) results pane
@@ -1432,6 +1708,7 @@ async function poll() {
       const out_ = (s.exit_code === 0) ? 'committed' : 'discarded';
       status.textContent = 'Maintenance finished — ' + out_
         + ' (exit ' + s.exit_code + ').';
+      loadStats();  // a committed run changes counts and the sync time
     }
   };
   await tick();
@@ -1442,6 +1719,304 @@ async function poll() {
 fetch('/api/run/status').then(r => r.json()).then(s => {
   if (s.active) { showLog(); poll(); }
 });
+
+// ---- Row selection + inspector panel ----
+const inspect = document.getElementById('inspect');
+const inspectGrid = document.getElementById('inspect-grid');
+const inspectTitle = document.getElementById('inspect-title');
+const inspectDupes = document.getElementById('inspect-dupes');
+
+function selectRow(tr){
+  if (selTr) selTr.classList.remove('sel');
+  selTr = tr || null;
+  if (!selTr) { inspect.hidden = true; return; }
+  selTr.classList.add('sel');
+  selTr.scrollIntoView({block: 'nearest'});
+  showInspect(selTr);
+}
+
+function showInspect(tr){
+  const cols = lastData.columns, row = tr._row;
+  inspectGrid.innerHTML = '';
+  cols.forEach((c, i) => {
+    const k = document.createElement('div');
+    k.className = 'k'; k.textContent = c;
+    const v = document.createElement('div');
+    v.className = 'v';
+    let val = row[i];
+    if (val === null) val = '∅';
+    else if (isNum(val) && isByteCol(c))
+      val = fmtBytes(val) + '  (' + val.toLocaleString() + ' bytes)';
+    v.textContent = val;
+    inspectGrid.appendChild(k);
+    inspectGrid.appendChild(v);
+  });
+  inspectTitle.textContent = tr._path || '(no path column in this result)';
+  const md5Idx = cols.indexOf('md5');
+  const md5 = md5Idx !== -1 && typeof row[md5Idx] === 'string' ? row[md5Idx] : null;
+  inspectDupes.hidden = !md5;
+  if (md5) inspectDupes.onclick = () => dupList(md5);
+  for (const b of inspect.querySelectorAll('[data-act]')) {
+    b.disabled = !tr._path;
+    b.onclick = () => b.dataset.act === 'copy'
+      ? copyPath(tr._path) : fileAction(tr._path, b.dataset.act);
+  }
+  inspect.hidden = false;
+}
+document.getElementById('inspect-close').onclick = () => { inspect.hidden = true; };
+
+// ---- Keyboard: arrows move the selection, Enter opens, Space Quick Looks ----
+document.addEventListener('keydown', e => {
+  const el = document.activeElement;
+  if (el && (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT'
+             || el.tagName === 'SELECT')) return;
+  if (!lastData || out.style.display === 'none') return;
+  const rows = [...out.querySelectorAll('table tr')].slice(1)
+    .filter(tr => tr.style.display !== 'none');
+  if (!rows.length) return;
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    let i = rows.indexOf(selTr);
+    i = (e.key === 'ArrowDown') ? Math.min(i + 1, rows.length - 1) : Math.max(i - 1, 0);
+    selectRow(rows[i]);
+  } else if (e.key === 'Enter' && selTr && selTr._path) {
+    fileAction(selTr._path, 'open');
+  } else if (e.key === ' ' && selTr && selTr._path) {
+    e.preventDefault();
+    fileAction(selTr._path, 'preview');
+  } else if ((e.metaKey || e.ctrlKey) && e.key === 'c' && selTr && selTr._path
+             && !getSelection().toString()) {
+    copyPath(selTr._path);
+  }
+});
+
+// ---- SQL history (Cmd/Ctrl+Up/Down in the SQL box) ----
+let sqlHist = [];
+try { sqlHist = JSON.parse(localStorage.getItem('kendexSqlHistory') || '[]'); } catch (e) {}
+let histIdx = -1;
+function pushHistory(q){
+  q = (q || '').trim();
+  histIdx = -1;
+  if (!q || sqlHist[sqlHist.length - 1] === q) return;
+  sqlHist.push(q);
+  if (sqlHist.length > 50) sqlHist = sqlHist.slice(-50);
+  localStorage.setItem('kendexSqlHistory', JSON.stringify(sqlHist));
+}
+
+// ---- User-saved query presets (persisted in localStorage) ----
+const userPresetsEl = document.getElementById('user-presets');
+let userPresets = [];
+try { userPresets = JSON.parse(localStorage.getItem('kendexUserPresets') || '[]'); } catch (e) {}
+function persistUserPresets(){
+  localStorage.setItem('kendexUserPresets', JSON.stringify(userPresets));
+}
+function renderUserPresets(){
+  userPresetsEl.innerHTML = '';
+  userPresets.forEach((pr, i) => {
+    const b = document.createElement('button');
+    b.textContent = pr.name;
+    b.title = pr.q;
+    b.onclick = () => { sql.value = pr.q; run(); };
+    const del = document.createElement('span');
+    del.textContent = '×';
+    del.className = 'preset-del';
+    del.title = 'Delete this saved query';
+    del.onclick = (e) => {
+      e.stopPropagation();
+      if (!confirm('Delete saved query "' + pr.name + '"?')) return;
+      userPresets.splice(i, 1);
+      persistUserPresets();
+      renderUserPresets();
+    };
+    b.appendChild(del);
+    userPresetsEl.appendChild(b);
+  });
+}
+renderUserPresets();
+document.getElementById('savequery').onclick = () => {
+  const q = sql.value.trim();
+  if (!q) { alert('The SQL box is empty.'); return; }
+  const name = (prompt('Name this query:') || '').trim();
+  if (!name) return;
+  userPresets.push({name: name, q: q});
+  persistUserPresets();
+  renderUserPresets();
+};
+
+// ---- Export the visible (filtered) rows as CSV ----
+function csvCell(v){
+  if (v === null || v === undefined) return '';
+  const s = String(v);
+  return /[",\\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+exportBtn.onclick = () => {
+  if (!lastData) return;
+  const q = filterBox.value.trim().toLowerCase();
+  const rows = lastData.rows.filter(r => !q ||
+    r.map(v => v === null ? '' : String(v)).join(' ').toLowerCase().includes(q));
+  const lines = [lastData.columns.map(csvCell).join(',')];
+  for (const r of rows) lines.push(r.map(csvCell).join(','));
+  const blob = new Blob([lines.join('\\n') + '\\n'], {type: 'text/csv'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'kendex_results.csv';
+  a.click();
+  // Deferred: revoking synchronously can cancel the download in Chromium.
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+};
+
+// ---- Index stats strip, volume datalist, offline set, first-run state ----
+const statsEl = document.getElementById('stats');
+const volListEl = document.getElementById('vol-list');
+async function loadStats(){
+  let s;
+  try { s = await (await fetch('/api/stats')).json(); } catch (e) { return; }
+  document.body.classList.toggle('nodb', !!s.no_db);
+  offlineVols = new Set((s.volumes || []).filter(v => !v.mounted).map(v => v.name));
+  volListEl.innerHTML = '';
+  for (const v of (s.volumes || [])) {
+    const o = document.createElement('option');
+    o.value = v.name;
+    volListEl.appendChild(o);
+  }
+  statsEl.innerHTML = '';
+  const add = (txt, cls) => {
+    const sp = document.createElement('span');
+    if (cls) sp.className = cls;
+    sp.textContent = txt;
+    statsEl.appendChild(sp);
+  };
+  if (s.no_db) { add('no index yet — run Scan for new to create one', 'warn'); return; }
+  if (s.error) { add(s.error, 'warn'); return; }
+  add(s.files.toLocaleString() + ' files');
+  add(fmtBytes(s.bytes) + ' indexed');
+  const off = (s.volumes || []).filter(v => !v.mounted).length;
+  add((s.volumes || []).length + ' volumes' + (off ? ' (' + off + ' offline)' : ''),
+      off ? 'warn' : '');
+  if (s.synced_at) {
+    const stale = (s.synced_age_days || 0) > 7;
+    add('synced ' + (s.synced_age_days < 1 ? 'today' : s.synced_age_days + 'd ago')
+        + ' (' + s.synced_at + ')', stale ? 'warn' : '');
+  }
+}
+statsEl.onclick = loadStats;
+loadStats();
+
+// ---- Duplicate manager: tick copies to delete, export a reviewed list ----
+const dupModal = document.getElementById('dupmodal');
+const dupListEl = document.getElementById('dup-list');
+const dupSummary = document.getElementById('dup-summary');
+const DUP_SQL =
+  'WITH d AS (SELECT md5, sum(size_bytes) AS total FROM files ' +
+  'WHERE md5 IS NOT NULL GROUP BY md5 HAVING count(*) > 1 ' +
+  'ORDER BY total DESC LIMIT 80) ' +
+  'SELECT f.md5, f.path, f.size_bytes, f.modified_at ' +
+  'FROM files f JOIN d ON f.md5 = d.md5 ' +
+  'ORDER BY d.total DESC, f.md5, f.modified_at DESC';
+let dupGroups = [];   // [{md5, size, items: [{path, mtime, cb}]}]
+
+document.getElementById('dupes-open').onclick = async () => {
+  dupListEl.textContent = 'Loading…';
+  dupSummary.textContent = '';
+  dupModal.hidden = false;
+  let data;
+  try {
+    const r = await fetch('/api/query', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({sql: DUP_SQL})
+    });
+    data = await r.json();
+  } catch (e) { dupListEl.textContent = 'Request failed: ' + e; return; }
+  if (data.error) { dupListEl.textContent = data.error; return; }
+  buildDupGroups(data);
+};
+
+function buildDupGroups(data){
+  const by = new Map();
+  for (const [md5, path, size, mtime] of data.rows) {
+    if (!by.has(md5)) by.set(md5, {md5: md5, size: size, items: []});
+    by.get(md5).items.push({path: path, mtime: mtime || ''});
+  }
+  dupGroups = [...by.values()].filter(g => g.items.length > 1);
+  dupListEl.innerHTML = '';
+  if (!dupGroups.length) {
+    dupListEl.textContent =
+      'No duplicate groups found (md5s are computed during indexing).';
+    return;
+  }
+  for (const g of dupGroups) {
+    const head = document.createElement('div');
+    head.className = 'dup-head';
+    head.textContent = g.items.length + ' copies · ' + fmtBytes(g.size) + ' each · ';
+    const w = document.createElement('span');
+    w.className = 'waste';
+    w.textContent = fmtBytes(g.size * (g.items.length - 1)) + ' reclaimable · md5 '
+      + g.md5.slice(0, 10) + '…';
+    head.appendChild(w);
+    dupListEl.appendChild(head);
+    for (const it of g.items) {
+      const row = document.createElement('label');
+      row.className = 'dup-row';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.onchange = updateDupSummary;
+      it.cb = cb;
+      const m = document.createElement('span');
+      m.className = 'm';
+      m.textContent = (it.mtime || '').slice(0, 10);
+      const pspan = document.createElement('span');
+      pspan.className = 'p';
+      pspan.textContent = it.path;
+      row.appendChild(cb);
+      row.appendChild(m);
+      row.appendChild(pspan);
+      dupListEl.appendChild(row);
+    }
+  }
+  updateDupSummary();
+}
+
+function updateDupSummary(){
+  let n = 0, bytes = 0;
+  for (const g of dupGroups)
+    for (const it of g.items)
+      if (it.cb && it.cb.checked) { n++; bytes += g.size; }
+  dupSummary.textContent = n
+    ? n + ' copies marked · ' + fmtBytes(bytes) + ' to reclaim'
+    : 'nothing marked';
+}
+
+document.getElementById('dup-newest').onclick = () => {
+  // Rows arrive newest-first within each group (ORDER BY modified_at DESC),
+  // so keep item 0 and mark the rest.
+  for (const g of dupGroups) g.items.forEach((it, i) => { it.cb.checked = i > 0; });
+  updateDupSummary();
+};
+document.getElementById('dup-clear').onclick = () => {
+  for (const g of dupGroups) for (const it of g.items) it.cb.checked = false;
+  updateDupSummary();
+};
+document.getElementById('dup-export').onclick = () => {
+  const doomed = [];
+  for (const g of dupGroups) {
+    const marked = g.items.filter(it => it.cb.checked);
+    if (marked.length && marked.length === g.items.length) {
+      alert('Every copy of md5 ' + g.md5.slice(0, 10) + '… is marked — at least one '
+        + 'copy of each file must stay. Untick one and export again.');
+      return;
+    }
+    doomed.push(...marked.map(it => it.path));
+  }
+  if (!doomed.length) { alert('Nothing is marked for deletion.'); return; }
+  const blob = new Blob([doomed.join('\\n') + '\\n'], {type: 'text/plain'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'kendex_delete_list.txt';
+  a.click();
+  // Deferred: revoking synchronously can cancel the download in Chromium.
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+};
+document.getElementById('dup-close').onclick = () => { dupModal.hidden = true; };
 
 // ---- Edit exclude list (writes exclude_paths.json; applies on next crawl) ----
 const exModal = document.getElementById('exmodal');
@@ -1519,6 +2094,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, page, "text/html; charset=utf-8")
         elif self.path == "/api/run/status":
             self._send(200, json.dumps(run_status()))
+        elif self.path == "/api/stats":
+            self._send(200, json.dumps(get_stats()))
         elif self.path == "/api/excludes":
             self._send(200, json.dumps(get_excludes()))
         else:
@@ -1542,7 +2119,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps(run_query(sql)))
         elif self.path == "/api/open":
             self._send(200, json.dumps(open_path(
-                payload.get("path", ""), bool(payload.get("reveal")))))
+                payload.get("path", ""), payload.get("action", "open"))))
         elif self.path == "/api/run":
             self._send(200, json.dumps(start_run(payload.get("mode", ""))))
         elif self.path == "/api/run/halt":
