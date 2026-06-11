@@ -17,13 +17,11 @@ current index.
 
 ## Screenshots
 
-| Results, with the row inspector | Light mode |
-|---|---|
-| ![Query results with the inspector panel open](docs/screenshots/results-inspector.png) | ![The same console in light mode](docs/screenshots/light-mode.png) |
+![The Kendex console: query results with the row inspector open](docs/screenshots/light-mode.png)
 
-| A scan in progress | Duplicate manager |
-|---|---|
-| ![Indexing with live file count and rate](docs/screenshots/scan-progress.png) | ![Duplicate manager with copies marked for deletion](docs/screenshots/duplicate-manager.png) |
+| A scan in progress | Open from the index | Duplicate manager |
+|---|---|---|
+| ![Indexing with live file count and rate](docs/screenshots/scan-progress.png) | ![Right-click menu: Open, Quick Look, Reveal, Copy path](docs/screenshots/open-menu.png) | ![Duplicate manager with copies marked for deletion](docs/screenshots/duplicate-manager.png) |
 
 ## The desktop app
 
