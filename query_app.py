@@ -185,7 +185,7 @@ def _run_worker(mode):
                     _run.update(active=False, exit_code=None, phase="error",
                                 pid=None, halt_requested=False)
                 return
-        elif mode in ("scan", "sync"):
+        elif mode in ("scan", "scan_fast", "sync"):
             log.write("No files.db exists yet; first scan will create it "
                       "in the working copy.\n")
             if mode == "sync":
