@@ -1,95 +1,131 @@
-# Kendex
+<p align="center">
+  <img src="docs/screenshots/app-icon.png" width="120" alt="Kendex icon">
+</p>
 
-A single-host filesystem indexer for macOS. It walks your drives, records rich
-metadata (size, MD5, MIME type, EXIF for photos/videos) for every file into a
-DuckDB database, and serves a local web UI for querying it — including a
-duplicate-file finder. Designed to resume after interruption and to keep the
-index current with incremental refresh / prune passes.
+<h1 align="center">Kendex</h1>
 
-## Requirements
+<p align="center"><b>A local file-index console for macOS.</b><br>
+It walks your drives, records rich metadata (size, MD5, MIME type, EXIF for
+photos/videos) for every file into a DuckDB database, and gives you a fast
+desktop UI for querying it — including a duplicate-file manager.</p>
 
-- **macOS**
-- **[uv](https://docs.astral.sh/uv/)** — manages Python 3.14 and dependencies:
+Everything runs locally: the index never leaves your machine, queries run
+against a read-only connection, and maintenance runs work on a disposable copy
+of the database that is swapped in atomically only when a run succeeds — an
+in-progress crawl can always be halted and discarded without touching your
+current index.
+
+## Screenshots
+
+| Results, with the row inspector | Light mode |
+|---|---|
+| ![Query results with the inspector panel open](docs/screenshots/results-inspector.png) | ![The same console in light mode](docs/screenshots/light-mode.png) |
+
+| A scan in progress | Duplicate manager |
+|---|---|
+| ![Indexing with live file count and rate](docs/screenshots/scan-progress.png) | ![Duplicate manager with copies marked for deletion](docs/screenshots/duplicate-manager.png) |
+
+## The desktop app
+
+The Electron app (`Kendex.app`) starts the Python backend on a free localhost
+port and opens it in a native window. It keeps its own database under
+`~/Library/Application Support/kendex/files.db`, so it never interferes with a
+browser-mode service or another crawl.
+
+### Requirements
+
+- **macOS** (Apple Silicon for the prebuilt artifacts)
+- **[uv](https://docs.astral.sh/uv/)** — manages Python and dependencies:
   `curl -LsSf https://astral.sh/uv/install.sh | sh`
 - **libmagic** (required): `brew install libmagic`
 - **exiftool** (optional, for photo/video metadata): `brew install exiftool`
 
-## Install
-
-```bash
-unzip FileIndexer-installer.zip
-cd FileIndexer-installer
-./install.sh
-```
-
-The installer asks for an install directory and a database path, installs
-dependencies, and sets up a LaunchAgent so the query UI (http://127.0.0.1:8800)
-starts now and at every login. It’s safe to re-run to upgrade the programs;
-your database and exclude list are left untouched.
-
-## First crawl
-
-1. Open <http://127.0.0.1:8800>, click **Edit exclude list**, and add any
-   volumes you don’t want indexed (Time Machine, scratch disks, backups).
-2. Run the first full crawl (can take hours for a large collection). **Open a
-   new terminal first** so `FILE_INDEXER_DB` (added to your `~/.zshrc` by the
-   installer) is loaded:
-   ```bash
-   cd <install-dir>
-   uv run crawler.py
-   ```
-   (Or, in any shell, set it inline: `FILE_INDEXER_DB="<your-db-path>" uv run crawler.py`)
-3. Keep it current later:
-   ```bash
-   uv run crawler.py --reindex-changed   # refresh changed files
-   uv run crawler.py                      # add new files (resumes; skips indexed)
-   uv run crawler.py --prune              # drop rows for deleted files
-   uv run crawler.py --prune-excluded     # drop rows now covered by excludes
-   ```
-
-   After adding directories to the exclude list, run `--prune-excluded` to
-   remove already-indexed rows under them, then **Compact DB** to reclaim the
-   space. The web and desktop UI expose the same operation as **Prune
-   excluded**.
-
-The database location comes from the `FILE_INDEXER_DB` environment variable
-(the installer sets it in your `~/.zshrc` and in the LaunchAgent). The web UI’s
-Maintenance panel can run all of the above against a disposable copy without
-leaving the browser.
-
-## Desktop app
-
-The Electron wrapper runs the same Python query app in the background and opens
-it in a native desktop window, so you do not have to manage a browser tab.
+### Run from source
 
 ```bash
 npm install
 npm start
 ```
 
-The desktop app starts the Python backend with `uv run query_app.py` on a free
-localhost port, then shuts it down when the app quits. By default it uses an
-isolated Electron app-data database, so it will not interfere with the
-LaunchAgent/browser service or an in-progress crawl at `~/FileIndexer/files.db`.
-To point the desktop app at a specific database, set `FILE_INDEXER_DB`:
+### Package a build
+
+```bash
+npm run check   # syntax checks
+npm run smoke   # boots the backend through Electron and exits
+npm run dist    # DMG + ZIP in dist/
+```
+
+Builds are ad-hoc signed (an `afterPack` hook re-signs the bundle), so
+Gatekeeper shows the one-time *unverified developer* flow — **System Settings →
+Privacy & Security → Open Anyway** — rather than a dead-end "damaged" error.
+Tester install steps, including how to seed the app with an existing
+`files.db`, live in [README-DAD-TESTER.md](README-DAD-TESTER.md).
+
+To point the app at a specific database instead of its own:
 
 ```bash
 FILE_INDEXER_DB="$HOME/FileIndexer/files.db" npm start
 ```
 
-This is currently a development wrapper, not a fully bundled distributable. A
-later packaging pass should bundle Python dependencies, handle `libmagic` and
-`exiftool`, and produce a signed/notarized macOS `.app`.
+### What the console gives you
+
+- **Locate form + SQL box** — build a search from name/extension/date/volume
+  fields, or write DuckDB SQL directly (Cmd+Enter runs; Cmd+↑/↓ recalls
+  history; *Save query* pins your own presets to the sidebar).
+- **Readable results** — human-readable sizes, sortable columns, a type-to
+  filter, CSV export, and a row inspector with every column of the selected
+  file.
+- **Open from the index** — right-click any result (or use the inspector):
+  Open, Quick Look, Reveal in Finder, Copy path. Space previews the selected
+  row; Enter opens it.
+- **Duplicate manager** — top duplicate groups by wasted space; mark copies to
+  delete (at least one copy of each file must stay) and export a reviewed path
+  list for `rm`/`xargs`. Kendex itself never deletes files.
+- **Index maintenance** — scan for new files, refresh changed, prune deleted,
+  prune excluded, full sync, and DB compaction, all against a disposable copy
+  with live progress (file count and rate during first scans, a true
+  percentage when the run has a known total). The app holds off system sleep
+  while a run is active.
+- **Status at a glance** — file count, indexed bytes, volume online/offline
+  state, and index age above the form; rows on unmounted volumes are dimmed.
+- **Dark and light themes** — follows the system by default; the toggle in the
+  sidebar footer remembers your choice.
+
+## Browser mode (headless service)
+
+The same backend can run as a LaunchAgent serving <http://127.0.0.1:8800>:
+
+```bash
+./install.sh
+```
+
+The installer asks for an install directory and database path, installs
+dependencies, and registers the LaunchAgent. The crawler can also be driven
+directly from a shell (`FILE_INDEXER_DB` selects the database):
+
+```bash
+uv run crawler.py                      # add new files (resumes; skips indexed)
+uv run crawler.py --reindex-changed    # refresh changed files
+uv run crawler.py --prune              # drop rows for deleted files
+uv run crawler.py --prune-excluded     # drop rows now covered by excludes
+```
+
+After adding directories to the exclude list, run **Prune excluded** to remove
+already-indexed rows under them, then **Compact DB** to reclaim the space.
 
 ## Notes
 
-- All timestamps are **stored in UTC** and **displayed in your local time**.
-- The query UI is bound to `127.0.0.1` only and rejects cross-origin requests;
-  it holds a read-only DB connection, so queries can never modify the index.
-- `cleanup_tm.py` (a one-off Time Machine snapshot pruner) is **not** included —
-  it isn’t needed for normal use.
+- Timestamps are **stored in UTC** and **displayed in your local time**.
+- The backend binds to `127.0.0.1` only and rejects cross-origin requests; the
+  query connection is read-only, so queries can never modify the index.
+- Exclude lists are path prefixes, one per line, edited in-app (**Edit exclude
+  list**); changes apply on the next crawl.
 
 ## Uninstall
+
+Desktop app: delete `Kendex.app` and `~/Library/Application Support/kendex/`.
+
+Browser mode:
 
 ```bash
 launchctl bootout gui/$(id -u)/com.fileindexer.queryapp
