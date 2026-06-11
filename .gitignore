@@ -1,0 +1,31 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# macOS Finder metadata
+.DS_Store
+
+# Runtime logs from crawler.py
+*.log
+
+# DuckDB databases (the real one lives in the parent dir, but ignore any
+# stray .db files that get created inside the project directory)
+*.db
+
+# File Indexer installer build artifacts
+installer/FileIndexer-installer.zip
+installer/FileIndexer-installer/
+
+# Per-machine user exclude list (lists local volume/dir names — keep private).
+# Ship exclude_paths.example.json instead; the UI writes the real file here.
+exclude_paths.json
+
+# Personal one-off scripts / data-rescue manifests — not part of the tool.
+personal/
