@@ -384,38 +384,43 @@ PAGE = """<!doctype html>
 <style>
   :root {
     color-scheme: dark;
-    --bg: #0f1115;
-    --panel: #151922;
-    --panel-2: #1b202a;
-    --line: #2b3240;
-    --line-soft: #242a35;
+    --bg: #121418;
+    --panel: #181a22;
+    --panel-2: #202733;
+    --line: #343b49;
+    --line-soft: #2b313c;
     --text: #e7eaf0;
-    --muted: #8f98a8;
-    --blue: #69a7ff;
-    --green: #49c58f;
-    --yellow: #e7c75a;
+    --muted: #a3abba;
+    --blue: #79aaff;
+    --cyan: #68d8d6;
+    --green: #61d394;
+    --yellow: #f0cd63;
+    --rose: #f084a0;
     --red: #ee6678;
-    --field: #10131a;
-    --hover: #222936;
-    --shadow: 0 18px 50px rgba(0,0,0,.26);
+    --field: #11141b;
+    --hover: #252b36;
+    --shadow: 0 18px 50px rgba(0,0,0,.24);
   }
   * { box-sizing: border-box; }
   body {
     font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     margin: 0; display: flex; height: 100vh; color: var(--text);
-    background: var(--bg);
+    background:
+      linear-gradient(135deg, #17191f 0%, #12161f 45%, #17151b 100%);
   }
   button, input, select, textarea { font: inherit; }
   button { color: inherit; }
   #side {
     width: 250px; flex: none; border-right: 1px solid var(--line);
-    padding: 16px 14px; overflow-y: auto; background: var(--panel);
+    padding: 16px 14px; overflow-y: auto;
+    background: linear-gradient(180deg, #1b1d27 0%, #151821 52%, #17171d 100%);
   }
   .brand { display: flex; gap: 10px; align-items: center; margin: 0 0 18px; }
   .brand-mark {
     width: 34px; height: 34px; border-radius: 8px; display: grid; place-items: center;
-    background: linear-gradient(135deg, #6ca8ff, #49c58f); color: #081018;
-    font-weight: 800; letter-spacing: 0; box-shadow: 0 8px 22px rgba(73,197,143,.18);
+    background: linear-gradient(135deg, #79aaff 0%, #68d8d6 50%, #f0cd63 100%);
+    color: #081018; font-weight: 800; letter-spacing: 0;
+    box-shadow: 0 8px 22px rgba(104,216,214,.18);
   }
   .brand-name { font-size: 15px; font-weight: 700; }
   .brand-meta { font-size: 12px; color: var(--muted); margin-top: 1px; }
@@ -430,22 +435,32 @@ PAGE = """<!doctype html>
     border-radius: 7px; background: transparent; cursor: pointer;
     transition: background .12s ease, border-color .12s ease, transform .08s ease;
   }
-  #side button:hover { background: var(--hover); border-color: #3a4352; }
+  #side button:hover { background: var(--hover); border-color: #445065; }
   #side button:active { transform: translateY(1px); }
-  #presets button { border-left: 3px solid var(--blue); background: rgba(105,167,255,.08); }
-  #maint button { border-left: 3px solid var(--green); background: rgba(73,197,143,.07); }
-  button#clearlog { border-left: 3px solid var(--yellow); background: rgba(231,199,90,.08); }
-  button#edit-excludes { border-left: 3px solid var(--blue); background: rgba(105,167,255,.08); margin-top: 8px; }
+  #presets button:nth-child(1) { border-left: 3px solid var(--blue); background: linear-gradient(90deg, rgba(121,170,255,.18), rgba(121,170,255,.06)); }
+  #presets button:nth-child(2) { border-left: 3px solid var(--cyan); background: linear-gradient(90deg, rgba(104,216,214,.15), rgba(104,216,214,.05)); }
+  #presets button:nth-child(3) { border-left: 3px solid var(--rose); background: linear-gradient(90deg, rgba(240,132,160,.15), rgba(240,132,160,.05)); }
+  #presets button:nth-child(4) { border-left: 3px solid var(--yellow); background: linear-gradient(90deg, rgba(240,205,99,.15), rgba(240,205,99,.05)); }
+  #presets button:nth-child(5) { border-left: 3px solid var(--green); background: linear-gradient(90deg, rgba(97,211,148,.15), rgba(97,211,148,.05)); }
+  #presets button:nth-child(6) { border-left: 3px solid #b18cff; background: linear-gradient(90deg, rgba(177,140,255,.15), rgba(177,140,255,.05)); }
+  #presets button:nth-child(7) { border-left: 3px solid #ff9f6e; background: linear-gradient(90deg, rgba(255,159,110,.14), rgba(255,159,110,.05)); }
+  #maint button { border-left: 3px solid var(--green); background: linear-gradient(90deg, rgba(97,211,148,.14), rgba(97,211,148,.05)); }
+  #maint button:nth-child(4) { border-left-color: var(--cyan); background: linear-gradient(90deg, rgba(104,216,214,.14), rgba(104,216,214,.05)); }
+  #maint button:nth-child(5) { border-left-color: var(--yellow); background: linear-gradient(90deg, rgba(240,205,99,.14), rgba(240,205,99,.05)); }
+  button#clearlog { border-left: 3px solid var(--yellow); background: linear-gradient(90deg, rgba(240,205,99,.16), rgba(240,205,99,.06)); }
+  button#edit-excludes { border-left: 3px solid var(--blue); background: linear-gradient(90deg, rgba(121,170,255,.16), rgba(121,170,255,.06)); margin-top: 8px; }
   button#halt { border-left: 3px solid var(--red); color: #ff93a0; margin-top: 8px; }
   #side button#halt:hover { background: rgba(238,102,120,.1); border-color: rgba(238,102,120,.45); }
   #side hr { border: none; border-top: 1px solid var(--line); margin: 16px 0; }
   #main {
     flex: 1; display: flex; flex-direction: column; padding: 18px;
-    min-width: 0; background: var(--bg);
+    min-width: 0;
+    background: linear-gradient(180deg, rgba(255,255,255,.025), rgba(255,255,255,0) 32%);
   }
   textarea {
     width: 100%; height: 118px; padding: 12px; border: 1px solid var(--line);
-    border-radius: 8px; background: var(--field); color: var(--text);
+    border-radius: 8px; background: linear-gradient(180deg, #151922, #10131a);
+    color: var(--text);
     resize: vertical; font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
     outline: none;
   }
@@ -455,10 +470,11 @@ PAGE = """<!doctype html>
   #bar { margin: 10px 0 8px; display: flex; gap: 10px; align-items: center; }
   #run, #locate button {
     min-height: 34px; padding: 6px 14px; border-radius: 7px;
-    border: 1px solid rgba(105,167,255,.5); background: rgba(105,167,255,.16);
+    border: 1px solid rgba(121,170,255,.58);
+    background: linear-gradient(180deg, rgba(121,170,255,.24), rgba(121,170,255,.12));
     cursor: pointer; font-weight: 650;
   }
-  #run:hover, #locate button:hover { background: rgba(105,167,255,.23); }
+  #run:hover, #locate button:hover { background: linear-gradient(180deg, rgba(121,170,255,.31), rgba(121,170,255,.16)); }
   #status { color: var(--muted); }
   #run-progress {
     height: 7px; border: 1px solid var(--line-soft); border-radius: 999px;
@@ -474,7 +490,8 @@ PAGE = """<!doctype html>
   }
   #out {
     flex: 1; overflow: auto; border: 1px solid var(--line); border-radius: 8px;
-    background: #0d0f14; box-shadow: var(--shadow);
+    background: linear-gradient(180deg, #11141a, #0c0f14);
+    box-shadow: var(--shadow);
   }
   table { border-collapse: collapse; width: 100%; }
   th, td { border-bottom: 1px solid var(--line-soft); padding: 7px 10px; text-align: left;
@@ -489,7 +506,8 @@ PAGE = """<!doctype html>
   #pathbox {
     border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px;
              margin: 0 0 10px; white-space: pre-wrap; word-break: break-all;
-             color: #c7cfdd; background: var(--field);
+             color: #c7cfdd;
+             background: linear-gradient(180deg, #171b24, #12151c);
              font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
              /* 2 text lines + padding + border (border-box): no wrap jiggle */
              min-height: calc(2.9em + 18px); flex: none; }
@@ -498,9 +516,11 @@ PAGE = """<!doctype html>
   td.num { text-align: right; }
   .err { color: #ff93a0; padding: 14px; white-space: pre-wrap; }
   #locate {
-    border: 1px solid var(--line); border-radius: 8px; margin: 0 0 10px;
+    border: 1px solid #3a4558; border-radius: 8px; margin: 0 0 10px;
     padding: 12px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
-    background: var(--panel-2);
+    background:
+      linear-gradient(135deg, rgba(121,170,255,.12), rgba(104,216,214,.07) 45%, rgba(240,205,99,.06)),
+      var(--panel-2);
   }
   #locate legend {
     font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
@@ -508,7 +528,7 @@ PAGE = """<!doctype html>
   }
   #locate input, #locate select {
     padding: 6px 9px; border: 1px solid var(--line); border-radius: 7px;
-    background: var(--field); color: var(--text); outline: none;
+    background: linear-gradient(180deg, #151923, #10131a); color: var(--text); outline: none;
     min-height: 34px;
   }
   #locate input[type="checkbox"] { min-height: 0; accent-color: var(--blue); }
