@@ -19,9 +19,38 @@ function projectRoot() {
   return path.resolve(__dirname, '..');
 }
 
+function configPath() {
+  return path.join(app.getPath('userData'), 'config.json');
+}
+
+function readConfig() {
+  try {
+    return JSON.parse(fs.readFileSync(configPath(), 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
+function writeConfig(patch) {
+  const next = { ...readConfig(), ...patch };
+  fs.mkdirSync(app.getPath('userData'), { recursive: true });
+  fs.writeFileSync(configPath(), JSON.stringify(next, null, 2));
+  return next;
+}
+
+// Resolve the database path. Precedence: FILE_INDEXER_DB env var (dev / CLI
+// override) > the location chosen in-app (config.json) > the default under
+// userData. A Finder-launched .app doesn't inherit the shell environment, so
+// the in-app choice is the practical way for most users to relocate the index
+// onto another volume.
 function defaultDbPath() {
   if (process.env.FILE_INDEXER_DB) {
     return process.env.FILE_INDEXER_DB;
+  }
+
+  const configured = readConfig().dbPath;
+  if (configured) {
+    return configured;
   }
 
   return path.join(app.getPath('userData'), 'files.db');
@@ -278,6 +307,54 @@ function stopBackend() {
   proc.kill('SIGTERM');
 }
 
+// Let the user pick a folder (on any volume) to house the index. The backend
+// reads its path from FILE_INDEXER_DB at spawn time, so the choice is persisted
+// in config.json and applied on the next launch rather than mid-session.
+async function chooseDbLocation() {
+  const current = defaultDbPath();
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: 'Choose a folder to store the Kendex database',
+    message: 'A files.db index will be kept in the folder you select.',
+    buttonLabel: 'Use This Folder',
+    defaultPath: path.dirname(current),
+    properties: ['openDirectory', 'createDirectory'],
+  });
+  if (result.canceled || !result.filePaths.length) return;
+
+  const newPath = path.join(result.filePaths[0], 'files.db');
+  if (newPath === current) return;
+
+  writeConfig({ dbPath: newPath });
+
+  if (process.env.FILE_INDEXER_DB) {
+    dialog.showMessageBoxSync(mainWindow, {
+      type: 'warning',
+      message: 'Saved, but FILE_INDEXER_DB overrides it',
+      detail: 'This app was launched with the FILE_INDEXER_DB environment '
+        + 'variable set, which takes precedence over the in-app setting. Your '
+        + 'choice was saved and will apply when the app runs without that '
+        + 'variable set.',
+    });
+    return;
+  }
+
+  const choice = dialog.showMessageBoxSync(mainWindow, {
+    type: 'question',
+    buttons: ['Relaunch Now', 'Later'],
+    defaultId: 0,
+    cancelId: 1,
+    message: 'Database location saved',
+    detail: `Kendex will use:\n${newPath}\n\nRelaunch to apply. Your existing `
+      + 'index is not moved automatically — relaunching starts a fresh index at '
+      + 'the new location. To reuse an existing index, quit and copy your '
+      + 'files.db into that folder first.',
+  });
+  if (choice === 0) {
+    app.relaunch();
+    app.quit();
+  }
+}
+
 function installMenu() {
   const revealDb = () => {
     const dbPath = defaultDbPath();
@@ -300,6 +377,10 @@ function installMenu() {
     {
       label: 'File',
       submenu: [
+        {
+          label: 'Choose Database Location…',
+          click: chooseDbLocation,
+        },
         {
           label: 'Open Database Location',
           click: revealDb,
