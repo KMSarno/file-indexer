@@ -21,20 +21,24 @@ brew install exiftool
 
 1. Open the `.dmg`.
 2. Drag **Kendex** to **Applications**.
-3. Open **Kendex**.
+3. Open **Kendex** — it just opens. (Recent builds are signed and notarized
+   by Apple, so there's no security warning.)
 
-macOS will warn that it cannot verify this unsigned test build:
+Once it's running, Kendex keeps itself up to date: when a new version is
+released it downloads quietly in the background and installs the next time you
+quit, so you rarely need a new download again.
 
-1. Try to open Kendex once and dismiss the warning.
-2. Open **System Settings → Privacy & Security**, scroll down to the
-   Kendex message, click **Open Anyway**, and confirm.
+<details>
+<summary>Older unsigned test build?</summary>
 
-If macOS instead claims the app is **"damaged"**, clear the download
-quarantine flag in Terminal and open it again:
+If you were sent an early build and macOS says it "cannot be verified" or is
+"damaged": try to open it once, then go to **System Settings → Privacy &
+Security → Open Anyway**. If that doesn't work, run this in Terminal and reopen:
 
 ```bash
 xattr -cr /Applications/Kendex.app
 ```
+</details>
 
 ## First Run
 

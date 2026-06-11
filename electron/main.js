@@ -1,4 +1,5 @@
-const { app, BrowserWindow, Menu, dialog, powerSaveBlocker, shell } = require('electron');
+const { app, BrowserWindow, Menu, Notification, dialog, powerSaveBlocker, shell } = require('electron');
+const { autoUpdater } = require('electron-updater');
 const { spawn } = require('child_process');
 const fs = require('fs');
 const http = require('http');
@@ -396,6 +397,68 @@ async function chooseDbLocation() {
   }
 }
 
+// ---- Auto-update (electron-updater, GitHub Releases feed) ----------------
+// Only meaningful in a packaged, signed+notarized build. The flow is
+// deliberately non-intrusive for a tool that runs multi-hour scans: updates
+// download in the background and install on the *next* quit (autoInstallOnAppQuit)
+// — nothing is ever restarted out from under a running index. A menu item lets
+// the user apply it immediately when they're ready.
+let updateReady = false;       // a downloaded update is staged for install
+let manualCheck = false;       // the current check came from the menu
+
+function setupAutoUpdate() {
+  if (!app.isPackaged) return;  // no-op in `npm start` / dev
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+
+  autoUpdater.on('update-downloaded', (info) => {
+    updateReady = true;
+    installMenu();              // enable "Restart & Update Now"
+    try {
+      new Notification({
+        title: 'Kendex update ready',
+        body: `Version ${info.version} installs the next time you quit — `
+          + 'or choose Kendex → Restart & Update Now.',
+      }).show();
+    } catch { /* notifications may be denied; the menu item still works */ }
+  });
+
+  autoUpdater.on('update-not-available', () => {
+    if (!manualCheck) return;
+    manualCheck = false;
+    dialog.showMessageBox(mainWindow, {
+      type: 'info', message: 'You’re up to date',
+      detail: `Kendex ${app.getVersion()} is the latest version.`,
+    });
+  });
+
+  autoUpdater.on('error', (err) => {
+    console.error('[updater]', err);
+    if (!manualCheck) return;
+    manualCheck = false;
+    dialog.showMessageBox(mainWindow, {
+      type: 'warning', message: 'Update check failed',
+      detail: String((err && err.message) || err),
+    });
+  });
+
+  const check = () => autoUpdater.checkForUpdates().catch((e) => console.error('[updater]', e));
+  check();
+  setInterval(check, 24 * 60 * 60 * 1000);  // once a day
+}
+
+function checkForUpdatesManually() {
+  if (!app.isPackaged) {
+    dialog.showMessageBox(mainWindow, {
+      type: 'info', message: 'Updates are only checked in the installed app',
+      detail: 'Run a packaged build to test auto-update.',
+    });
+    return;
+  }
+  manualCheck = true;
+  autoUpdater.checkForUpdates().catch((e) => console.error('[updater]', e));
+}
+
 function installMenu() {
   const revealDb = () => {
     const dbPath = defaultDbPath();
@@ -411,6 +474,13 @@ function installMenu() {
       label: app.name,
       submenu: [
         { role: 'about' },
+        { type: 'separator' },
+        { label: 'Check for Updates…', click: checkForUpdatesManually },
+        {
+          label: 'Restart & Update Now',
+          visible: updateReady,
+          click: () => autoUpdater.quitAndInstall(),
+        },
         { type: 'separator' },
         { role: 'quit' },
       ],
@@ -472,6 +542,7 @@ app.whenReady().then(async () => {
       return;
     }
     await createWindow();
+    setupAutoUpdate();
   } catch (error) {
     closeSplash();
     dialog.showErrorBox('Kendex failed to start', error.stack || String(error));

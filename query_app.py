@@ -90,21 +90,31 @@ def _cmd(*flags):
 # "compact" is the odd one out: it doesn't run the crawler on a snapshot but
 # rebuilds WORK_DB itself from the live DB (attached read-only), reclaiming
 # the dead space DuckDB never returns to the OS. Same swap-on-success applies.
+def _cmd_live(*flags):
+    # Add Files targets the LIVE db (not the disposable working copy): adding is
+    # purely additive (INSERT OR IGNORE + filling NULL md5s), so it can write
+    # straight through and resume after any interruption — see _run_worker.
+    return PY + " crawler.py " + " ".join(flags + ("--db", shlex.quote(DB_PATH)))
+
+
 COMMANDS = {
+    # "add" is the one user-facing indexing action: a metadata-only sweep (fast,
+    # no MD5 reads) then a size-collision-only hash pass that logs duplicates.
+    # It writes directly to the live DB and is resumable (handled specially in
+    # _run_worker); the rest below are copy-on-write (snapshot → swap on success).
+    "add":     " && ".join([_cmd_live("--no-hash"), _cmd_live("--hash-dupes")]),
     "reindex": _cmd("--reindex-changed"),
     "scan":    _cmd(),
-    # Two-phase indexing: a metadata-only sweep (no MD5 reads, so it runs at
-    # directory-walk speed), then a separate pass that fills in the missing
-    # hashes smallest-first. Together they make the index usable in minutes
-    # while dedup data arrives in the background.
-    "scan_fast":     _cmd("--no-hash"),
-    "hash_backfill": _cmd("--hash-only"),
     "prune":   _cmd("--prune"),
     "prune_excluded": _cmd("--prune-excluded"),
     "sync":    " && ".join([_cmd("--reindex-changed"), _cmd(), _cmd("--prune")]),
     "compact": (PY + " compact_db.py "
                 + shlex.quote(DB_PATH) + " " + shlex.quote(WORK_DB)),
 }
+
+# Modes that write straight to the live DB instead of a working copy (additive,
+# resumable, nothing to discard).
+DIRECT_MODES = {"add"}
 
 # Read-only query connection, serialized with a lock. DuckDB cursors aren't safe
 # to share across threads, so one query runs at a time — fine for a single-user
@@ -166,6 +176,45 @@ def _run_worker(mode):
         command = COMMANDS["scan"]
     log.write(f"$ {command}\n\n")
 
+    if mode in DIRECT_MODES:
+        # Additive + resumable: write straight to the live DB, no snapshot/swap,
+        # nothing to discard. The read-only query connection steps aside for the
+        # duration (the writer needs the database) and is reopened at the end.
+        log.write("Adding files — writes directly to the index and is safe to "
+                  "halt and resume; queries pause until it finishes.\n\n")
+        log.flush()
+        with _lock:
+            try:
+                if _con is not None:
+                    _con.close()
+            except Exception:
+                pass
+            _con = None
+        proc = subprocess.Popen(
+            command, shell=True, cwd=BASE_DIR,
+            stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
+        )
+        with _run_lock:
+            _run.update(pid=proc.pid, phase="running")
+        code = proc.wait()
+        log.flush()
+        with _run_lock:
+            halted = _run["halt_requested"]
+        if halted:
+            log.write("\n[stopped] Halted — files added so far are kept. "
+                      "Run Add Files again to resume.\n")
+        elif code != 0:
+            log.write(f"\n[stopped] Exited {code} — files added so far are kept. "
+                      f"Run Add Files again to resume.\n")
+        else:
+            log.write("\n[committed] Add Files complete.\n")
+        log.close()
+        _open_con()                         # reopen read-only (acquires _lock)
+        with _run_lock:
+            _run.update(active=False, exit_code=code, phase="done", pid=None,
+                        halt_requested=False)
+        return
+
     if mode == "compact":
         # compact_db.py builds WORK_DB itself (COPY FROM DATABASE from the
         # live DB, attached read-only) — no snapshot needed.
@@ -185,7 +234,7 @@ def _run_worker(mode):
                     _run.update(active=False, exit_code=None, phase="error",
                                 pid=None, halt_requested=False)
                 return
-        elif mode in ("scan", "scan_fast", "sync"):
+        elif mode in ("scan", "sync"):
             log.write("No files.db exists yet; first scan will create it "
                       "in the working copy.\n")
             if mode == "sync":
@@ -464,6 +513,12 @@ def get_stats() -> dict:
         except Exception as exc:
             out["error"] = f"{type(exc).__name__}: {exc}"
             return out
+        try:
+            # is_dataless is a newer column; tolerate an older DB without it.
+            out["dataless"] = cur.execute(
+                "SELECT count(*) FROM files WHERE is_dataless").fetchone()[0]
+        except Exception:
+            out["dataless"] = None
     out["files"] = n
     out["bytes"] = int(total)
     # Named volumes live under /Volumes, but the boot disk is stored as "/"
@@ -649,11 +704,10 @@ PAGE = """<!doctype html>
   }
   .brand { display: flex; gap: 11px; align-items: center; margin: 0 0 12px; flex: none; }
   .brand-mark {
-    width: 36px; height: 36px; border-radius: 9px; display: grid; place-items: center;
-    background: linear-gradient(145deg, #f4c178 0%, #dd9a44 55%, #b87425 100%);
-    color: #221302; font: 700 13.5px var(--mono);
-    box-shadow: 0 4px 14px rgba(232,166,84,.22), inset 0 1px 0 rgba(255,255,255,.45);
+    width: 36px; height: 36px; border-radius: 9px; overflow: hidden; flex: none;
+    box-shadow: 0 4px 14px rgba(232,166,84,.18), 0 0 0 1px rgba(255,255,255,.06);
   }
+  .brand-mark svg { display: block; width: 36px; height: 36px; }
   .brand-name { font-size: 15px; font-weight: 700; letter-spacing: -.01em; }
   .brand-meta {
     margin-top: 2px; font: 600 9.5px var(--mono);
@@ -701,7 +755,40 @@ PAGE = """<!doctype html>
     box-shadow: inset 0 2px 5px rgba(0,0,0,.35);
   }
   #side button:disabled { pointer-events: none; }
-  #presets button, #user-presets button { --accent-rgb: var(--cyan-rgb); }
+  #user-presets button { --accent-rgb: var(--cyan-rgb); }
+  /* Sample queries collapsed into one dropdown (loads + runs on select). */
+  #presets {
+    width: 100%; margin: 0 0 4px; min-height: 34px; padding: 6px 30px 6px 11px;
+    font: inherit; color: var(--btn-text); cursor: pointer;
+    border: 1px solid var(--btn-line); border-radius: 8px;
+    box-shadow: var(--btn-shadow); -webkit-appearance: none; appearance: none;
+    background:
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath fill='%23919691' d='M0 0l5 6 5-6z'/%3E%3C/svg%3E")
+        no-repeat right 11px center,
+      linear-gradient(180deg, rgba(255,255,255,.035), rgba(255,255,255,0) 60%), var(--btn-face);
+  }
+  #presets:hover { border-color: rgba(var(--cyan-rgb), .28); }
+  /* Collapsible "Maintenance" group: rarely-used / destructive actions tucked
+     away so the everyday Add Files action stays one click. */
+  .maint-more { margin: 0 0 4px; }
+  .maint-more > summary {
+    list-style: none; display: flex; align-items: center; gap: 9px;
+    min-height: 32px; padding: 6px 10px; margin: 0 0 4px; cursor: pointer;
+    border: 1px solid var(--btn-line); border-radius: 8px; color: var(--btn-text);
+    background: linear-gradient(180deg, rgba(255,255,255,.035), rgba(255,255,255,0) 60%), var(--btn-face);
+    box-shadow: var(--btn-shadow);
+  }
+  .maint-more > summary::-webkit-details-marker { display: none; }
+  .maint-more > summary::before {
+    content: "\\25B8"; font-size: 10px; color: var(--muted); width: 7px; flex: none;
+  }
+  .maint-more[open] > summary::before { content: "\\25BE"; }
+  .maint-more > summary:hover { border-color: rgba(var(--amber-rgb), .28); }
+  /* Plain-language note demystifying the two "hash" buttons above it. */
+  #maint .hint {
+    margin: 1px 3px 9px; font-size: 11px; line-height: 1.5; color: var(--muted);
+  }
+  #maint .hint b { color: var(--btn-text); font-weight: 600; }
   #user-presets button .preset-del {
     margin-left: auto; padding: 0 5px; border-radius: 4px;
     color: var(--muted); opacity: 0; transition: opacity .12s ease;
@@ -1148,25 +1235,62 @@ PAGE = """<!doctype html>
 <body>
 <div id="side">
   <div class="brand">
-    <div class="brand-mark">K</div>
+    <div class="brand-mark" role="img" aria-label="Kendex logo">
+      <svg viewBox="96 96 832 832">
+        <defs>
+          <linearGradient id="bmbg" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="#27252c"/><stop offset=".55" stop-color="#17161b"/><stop offset="1" stop-color="#100f13"/>
+          </linearGradient>
+          <linearGradient id="bmamber" gradientUnits="userSpaceOnUse" x1="0" y1="286" x2="0" y2="746">
+            <stop offset="0" stop-color="#f2bc72"/><stop offset=".6" stop-color="#d9933c"/><stop offset="1" stop-color="#a96518"/>
+          </linearGradient>
+          <linearGradient id="bmcap" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f9d390"/><stop offset="1" stop-color="#e8a654"/></linearGradient>
+          <linearGradient id="bmbyte" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#b9e7f3"/><stop offset="1" stop-color="#4ba3bd"/></linearGradient>
+          <clipPath id="bmclip"><rect x="96" y="96" width="832" height="832" rx="186"/></clipPath>
+        </defs>
+        <rect x="96" y="96" width="832" height="832" rx="186" fill="url(#bmbg)"/>
+        <g clip-path="url(#bmclip)">
+          <rect x="96" y="97" width="832" height="5" fill="#ffffff" opacity=".14"/>
+          <g transform="translate(10,0)">
+            <rect x="449" y="473" width="78" height="78" rx="11" fill="url(#bmcap)"/>
+            <rect x="545" y="377" width="78" height="78" rx="11" fill="url(#bmbyte)"/>
+            <rect x="641" y="281" width="78" height="78" rx="11" fill="url(#bmbyte)"/>
+            <rect x="545" y="569" width="78" height="78" rx="11" fill="url(#bmbyte)"/>
+            <rect x="641" y="665" width="78" height="78" rx="11" fill="url(#bmbyte)"/>
+            <rect x="306" y="300" width="124" height="86" fill="url(#bmamber)"/><path d="M306 386 a62 18 0 0 0 124 0" fill="url(#bmamber)"/><ellipse cx="368" cy="300" rx="62" ry="18" fill="url(#bmcap)"/>
+            <rect x="306" y="414" width="124" height="86" fill="url(#bmamber)"/><path d="M306 500 a62 18 0 0 0 124 0" fill="url(#bmamber)"/><ellipse cx="368" cy="414" rx="62" ry="18" fill="url(#bmcap)"/>
+            <rect x="306" y="528" width="124" height="86" fill="url(#bmamber)"/><path d="M306 614 a62 18 0 0 0 124 0" fill="url(#bmamber)"/><ellipse cx="368" cy="528" rx="62" ry="18" fill="url(#bmcap)"/>
+            <rect x="306" y="642" width="124" height="86" fill="url(#bmamber)"/><path d="M306 728 a62 18 0 0 0 124 0" fill="url(#bmamber)"/><ellipse cx="368" cy="642" rx="62" ry="18" fill="url(#bmcap)"/>
+          </g>
+        </g>
+      </svg>
+    </div>
     <div>
       <div class="brand-name">Kendex</div>
       <div class="brand-meta">Local index console</div>
     </div>
   </div>
   <h3>Queries</h3>
-  <div id="presets"></div>
+  <select id="presets" aria-label="Sample queries">
+    <option value="" disabled selected>Sample queries&hellip;</option>
+  </select>
   <div id="user-presets"></div>
   <h3>Indexing</h3>
   <div id="maint">
-    <button data-mode="scan_fast" title="Metadata-only sweep (no content hashing) — fast first index">Fast scan (no hashes)</button>
-    <button data-mode="hash_backfill" title="Hash files the fast scan skipped, smallest first — enables the duplicate manager">Backfill hashes</button>
-    <button data-mode="reindex">Reindex changed</button>
-    <button data-mode="scan">Scan for new</button>
-    <button data-mode="prune">Prune deleted</button>
-    <button data-mode="prune_excluded">Prune excluded</button>
-    <button data-mode="sync">Full sync (all 3)</button>
-    <button data-mode="compact">Compact DB</button>
+    <button data-mode="add" title="Finds everything new on your drives, adds it to the index, and checks the new files for duplicates. Safe to stop and resume — nothing already added is lost.">Add Files</button>
+    <p class="hint"><b>Add Files</b> finds everything new on your drives, adds it
+      to the index, and checks the new files for duplicates. When it finishes,
+      the log reports any duplicate sets found &mdash; open the
+      <b>Duplicate manager</b> to review them and choose which copy to delete,
+      if any.</p>
+    <details class="maint-more">
+      <summary>Maintenance</summary>
+      <button data-mode="reindex">Reindex changed</button>
+      <button data-mode="prune">Prune deleted</button>
+      <button data-mode="prune_excluded">Prune excluded</button>
+      <button data-mode="sync">Full sync (all 3)</button>
+      <button data-mode="compact">Compact DB</button>
+    </details>
   </div>
   <h3>Tools</h3>
   <div id="tools">
@@ -1304,11 +1428,15 @@ themeBtn.onclick = () => {
 
 const presetsEl = document.getElementById('presets');
 for (const [name, q] of PRESETS) {
-  const b = document.createElement('button');
-  b.textContent = name;
-  b.onclick = () => { sql.value = q; run(); };
-  presetsEl.appendChild(b);
+  const o = document.createElement('option');
+  o.value = name; o.textContent = name;
+  presetsEl.appendChild(o);
 }
+presetsEl.onchange = () => {
+  const hit = PRESETS.find(([name]) => name === presetsEl.value);
+  if (hit) { sql.value = hit[1]; run(); }
+  presetsEl.selectedIndex = 0;   // snap back to the "Sample queries…" label
+};
 
 function isNum(v){ return typeof v === 'number'; }
 
@@ -1628,9 +1756,12 @@ const maintBtns = [...document.querySelectorAll('#maint button')];
 const haltBtn = document.getElementById('halt');
 const clearBtn = document.getElementById('clearlog');
 const LABELS = {reindex:'Reindex changed', scan:'Scan for new',
-                scan_fast:'Fast scan (no hashes)', hash_backfill:'Backfill hashes',
+                add:'Add Files',
                 prune:'Prune deleted', prune_excluded:'Prune excluded',
                 sync:'Full sync', compact:'Compact DB'};
+const DIRECT_MODES = ['add'];   // write straight to the DB; halting keeps progress
+const isDirect = m => DIRECT_MODES.includes(m);
+let runMode = null;             // current/last run mode, for halt messaging
 const PHASES = {preparing:'snapshotting files.db', running:'running',
                 halting:'halting'};
 let polling = null;
@@ -1653,9 +1784,14 @@ function renderLog(full) {
 
 for (const b of maintBtns) {
   b.onclick = async () => {
-    if (!confirm('Run "' + LABELS[b.dataset.mode] + '"?\\n\\nThe task works on '
-        + 'a copy of files.db; your current DB is only replaced if it finishes. '
-        + 'You can Halt & discard at any time.')) return;
+    const m = b.dataset.mode;
+    const msg = isDirect(m)
+      ? 'Run "' + LABELS[m] + '"?\\n\\nIt adds new files to the index and is safe '
+        + 'to halt and resume — nothing already added is lost.'
+      : 'Run "' + LABELS[m] + '"?\\n\\nThe task works on a copy of files.db; your '
+        + 'current DB is only replaced if it finishes. You can Halt & discard at '
+        + 'any time.';
+    if (!confirm(msg)) return;
     const r = await fetch('/api/run', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({mode: b.dataset.mode})
@@ -1668,8 +1804,12 @@ for (const b of maintBtns) {
 }
 
 haltBtn.onclick = async () => {
-  if (!confirm('Halt the running scan and discard its in-progress work?\\n\\n'
-      + 'Your current files.db is left completely unchanged.')) return;
+  const hmsg = isDirect(runMode)
+    ? 'Stop Add Files?\\n\\nFiles added so far are kept — click Add Files again '
+      + 'later to resume where it left off.'
+    : 'Halt the running scan and discard its in-progress work?\\n\\n'
+      + 'Your current files.db is left completely unchanged.';
+  if (!confirm(hmsg)) return;
   haltBtn.disabled = true;
   const d = await (await fetch('/api/run/halt', {method: 'POST',
     headers: {'Content-Type': 'application/json'}})).json();
@@ -1755,15 +1895,23 @@ async function poll() {
     if (s.progress) pathbox.textContent = s.progress;
     if (s.active) {
       setBusy(true);
+      runMode = s.mode;
+      haltBtn.textContent = isDirect(s.mode)
+        ? '\\u25A0 Halt (keep progress)' : '\\u25A0 Halt & discard run';
       const phase = PHASES[s.phase] || 'running';
+      const q = isDirect(s.mode) ? 'queries paused until it finishes'
+                                 : 'files.db still queryable';
       status.textContent = 'Maintenance: ' + (LABELS[s.mode] || s.mode)
-        + ' — ' + phase + '… (files.db still queryable)';
+        + ' — ' + phase + '… (' + q + ')';
     } else {
       setBusy(false);
       clearInterval(polling); polling = null;
-      const out_ = (s.exit_code === 0) ? 'committed' : 'discarded';
+      const out_ = isDirect(s.mode)
+        ? ((s.exit_code === 0) ? 'finished, changes saved' : 'stopped, progress kept')
+        : ((s.exit_code === 0) ? 'committed' : 'discarded');
       status.textContent = 'Maintenance finished — ' + out_
         + ' (exit ' + s.exit_code + ').';
+      haltBtn.textContent = '\\u25A0 Halt & discard run';   // reset to default
       loadStats();  // a committed run changes counts and the sync time
     }
   };
@@ -1946,6 +2094,7 @@ async function loadStats(){
   if (s.error) { add(s.error, 'warn'); return; }
   add(s.files.toLocaleString() + ' files');
   add(fmtBytes(s.bytes) + ' indexed');
+  if (s.dataless) add(s.dataless.toLocaleString() + ' not downloaded', 'warn');
   const off = (s.volumes || []).filter(v => !v.mounted).length;
   add((s.volumes || []).length + ' volumes' + (off ? ' (' + off + ' offline)' : ''),
       off ? 'warn' : '');
