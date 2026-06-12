@@ -274,7 +274,7 @@ def _run_worker(mode):
                           "there is no existing database to refresh or prune.\n")
         else:
             log.write("Snapshot failed: files.db does not exist.\n"
-                      "Run 'Scan for new' first to create the database.\n")
+                      "Run 'Add Files' first to create the database.\n")
             log.close()
             with _run_lock:
                 _run.update(active=False, exit_code=None, phase="error",
@@ -1297,7 +1297,7 @@ PAGE = """<!doctype html>
 
   /* ---- first run: no database yet ---- */
   body.nodb #out:empty::before {
-    content: "no index yet — review Edit exclude list, then run Scan for new (the first scan can take hours)";
+    content: "no index yet — review Edit exclude list, then click Add Files (the first scan can take hours)";
   }
 
   /* ---- duplicate manager ---- */
@@ -2248,7 +2248,7 @@ async function loadStats(){
     sp.textContent = txt;
     statsEl.appendChild(sp);
   };
-  if (s.no_db) { add('no index yet — run Scan for new to create one', 'warn'); return; }
+  if (s.no_db) { add('no index yet — click Add Files to create one', 'warn'); return; }
   if (s.error) { add(s.error, 'warn'); return; }
   add(s.files.toLocaleString() + ' files');
   add(fmtBytes(s.bytes) + ' indexed');
