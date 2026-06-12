@@ -75,8 +75,6 @@ EXCLUDE_DEFAULTS = {
     "/Volumes/TM7T",
     "/Volumes/TM16T",
     "/Volumes/MACBAK7T",
-    "/Volumes/BIGVFX",
-    "/Volumes/FOOTAGE",
     "/Volumes/.timemachine",                  # macOS exposes each TM snapshot here -- prune all
     "/.MobileBackups",                        # legacy local TM snapshots
     "/.Spotlight-V100",
@@ -460,7 +458,8 @@ def should_skip(path: Path, skip_dirs: set) -> bool:
 # =============================================================================
 
 def crawl(do_hash: bool = True, hash_only: bool = False, dupes_only: bool = False,
-          stat_only: bool = False, include_dataless: bool = False):
+          stat_only: bool = False, include_dataless: bool = False,
+          roots: list | None = None):
     mode_label = ("metadata only (stat-only)" if stat_only
                   else "yes" if do_hash else "no hashing")
     print(f"\n{'='*60}")
@@ -643,9 +642,16 @@ def crawl(do_hash: bool = True, hash_only: bool = False, dupes_only: bool = Fals
     current_volume = None
 
     try:
-        # Drop any CRAWL_ROOT that is itself the DB directory (or under it).
+        # A selective scan (roots given) restricts the walk to the chosen
+        # volumes; the default crawl uses CRAWL_ROOTS (just "/"). Each external
+        # is walked via its own /Volumes/NAME root, so when "/" is selected too
+        # it must NOT descend into /Volumes (that would re-walk every external,
+        # selected or not) -- prune that subtree for the boot root only.
+        selective = bool(roots)
+        base_roots = [Path(r) for r in roots] if selective else CRAWL_ROOTS
+        # Drop any root that is itself the DB directory (or under it).
         CRAWL_ROOTS_EFFECTIVE = [
-            r for r in CRAWL_ROOTS if not should_skip(r, skip_dirs)
+            r for r in base_roots if not should_skip(r, skip_dirs)
         ]
         tqdm.write(f"  Effective crawl roots: {[str(r) for r in CRAWL_ROOTS_EFFECTIVE]}\n", file=sys.stderr)
 
@@ -655,11 +661,17 @@ def crawl(do_hash: bool = True, hash_only: bool = False, dupes_only: bool = Fals
                 continue
 
             tqdm.write(f"  Crawling: {root}", file=sys.stderr)
+            prune_volumes = selective and root == Path("/")
 
             for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
                 dir_path = Path(dirpath)
 
                 if should_skip(dir_path, skip_dirs):
+                    dirnames.clear()
+                    continue
+
+                # Boot root in a selective scan: don't cross into other volumes.
+                if prune_volumes and dir_path == Path("/Volumes"):
                     dirnames.clear()
                     continue
 
@@ -1149,6 +1161,7 @@ if __name__ == "__main__":
     parser.add_argument("--prune",     action="store_true", help="Remove DB rows for files that no longer exist on disk (skips offline volumes)")
     parser.add_argument("--prune-excluded", action="store_true", help="Remove DB rows now covered by the exclude list (retroactive exclude; compact after)")
     parser.add_argument("--reindex-changed", action="store_true", help="Refresh rows whose on-disk file changed (size/mtime); skips offline volumes")
+    parser.add_argument("--roots", nargs="+", metavar="PATH", help="Restrict the crawl to these root paths (selective per-volume scan, e.g. / or /Volumes/NAME); default is all of CRAWL_ROOTS")
     parser.add_argument("--db", help="Operate on this DB file instead of the default (used by the web UI to run against a disposable copy)")
     args = parser.parse_args()
 
@@ -1168,6 +1181,6 @@ if __name__ == "__main__":
         crawl(do_hash=False, hash_only=True,
               include_dataless=args.include_dataless)
     elif args.stat_only:
-        crawl(stat_only=True)
+        crawl(stat_only=True, roots=args.roots)
     else:
-        crawl(do_hash=not args.no_hash)
+        crawl(do_hash=not args.no_hash, roots=args.roots)

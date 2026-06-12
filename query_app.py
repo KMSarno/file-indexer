@@ -34,6 +34,7 @@ import crawler  # single source of truth for DB_PATH, EXCLUDE_DEFAULTS, exclude 
 
 DB_PATH = str(crawler.DB_PATH)  # reuse the crawler's path so the two can't drift
 WORK_DB = DB_PATH + ".scan"  # working copy the crawler writes to during a run
+STATE_PATH = DB_PATH + ".state.json"  # Kendex sidecar metadata (initial-scan flag)
 MAX_ROWS = 2000  # cap returned rows so the browser never chokes on 2.5M rows
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -127,7 +128,8 @@ _lock = threading.Lock()
 
 # Maintenance run state, guarded by its own lock (never nested with _lock).
 _run = {"active": False, "mode": None, "exit_code": None,
-        "phase": None, "pid": None, "halt_requested": False}
+        "phase": None, "pid": None, "halt_requested": False,
+        "command": None, "roots": None}
 _run_lock = threading.Lock()
 
 
@@ -153,15 +155,39 @@ def _discard_work():
     _rm(WORK_DB + ".wal")
 
 
-def start_run(mode: str) -> dict:
-    """Launch a maintenance command in the background. Returns immediately."""
+def _add_command(roots) -> str:
+    """Build the Add Files command for an optional selective volume scan. The
+    walk pass (--no-hash) is restricted to the chosen roots; the duplicate pass
+    (--hash-dupes) is always DB-wide. Roots are validated against the live
+    mounted-volume whitelist by the caller and shlex-quoted here, so request
+    input can only ever pick from a server-derived set of real paths."""
+    walk = [PY, "crawler.py", "--no-hash"]
+    if roots:
+        walk += ["--roots"] + [shlex.quote(r) for r in roots]
+    walk += ["--db", shlex.quote(DB_PATH)]
+    return " ".join(walk) + " && " + _cmd_live("--hash-dupes")
+
+
+def start_run(mode: str, roots=None) -> dict:
+    """Launch a maintenance command in the background. Returns immediately.
+    `roots` (Add Files only) restricts the scan to the given volume roots; each
+    must be a currently-selectable volume or the run is rejected."""
     if mode not in COMMANDS:
         return {"error": f"unknown mode: {mode}"}
+    command = COMMANDS[mode]
+    if mode == "add" and roots:
+        if not isinstance(roots, list) or not all(isinstance(r, str) for r in roots):
+            return {"error": "roots must be a list of strings"}
+        selectable = {v["root"] for v in list_volumes()["volumes"]}
+        bad = [r for r in roots if r not in selectable]
+        if bad:
+            return {"error": "not a selectable volume: " + ", ".join(bad)}
+        command = _add_command(roots)
     with _run_lock:
         if _run["active"]:
             return {"error": f"a task is already running: {_run['mode']}"}
-        _run.update(active=True, mode=mode, exit_code=None,
-                    phase="preparing", pid=None, halt_requested=False)
+        _run.update(active=True, mode=mode, exit_code=None, phase="preparing",
+                    pid=None, halt_requested=False, command=command, roots=roots)
     threading.Thread(target=_run_worker, args=(mode,), daemon=True).start()
     return {"ok": True, "mode": mode}
 
@@ -170,7 +196,9 @@ def _run_worker(mode):
     """Build WORK_DB (snapshot+crawler, or compact) → swap on success / discard on halt."""
     global _con
     log = open(LOG_PATH, "w")
-    command = COMMANDS[mode]
+    with _run_lock:
+        command = _run.get("command") or COMMANDS[mode]
+        roots = _run.get("roots")
     _discard_work()  # clear any stale leftover from a prior crash
     if mode == "sync" and not os.path.exists(DB_PATH):
         command = COMMANDS["scan"]
@@ -208,6 +236,10 @@ def _run_worker(mode):
                       f"Run Add Files again to resume.\n")
         else:
             log.write("\n[committed] Add Files complete.\n")
+            # A successful sweep of every volume completes the initial scan, so
+            # the picker can default to none-checked next time (option A).
+            if _scan_is_full(roots):
+                _mark_initial_complete()
         log.close()
         _open_con()                         # reopen read-only (acquires _lock)
         with _run_lock:
@@ -329,7 +361,8 @@ def run_status() -> dict:
     """Current maintenance state plus the tail of the run log."""
     with _run_lock:
         state = dict(_run)
-    state.pop("pid", None)  # internal detail, not for the browser
+    for k in ("pid", "command", "roots"):
+        state.pop(k, None)  # internal details, not for the browser
     tail = ""
     progress = ""
     try:
@@ -531,6 +564,63 @@ def get_stats() -> dict:
         for v, c in vols
     ]
     return out
+
+
+def initial_scan_done() -> bool:
+    """True once a full (all-volumes) Add Files run has completed successfully.
+    Read from the sidecar STATE_PATH; absent (no DB yet, or a first scan that was
+    halted partway) reads as False, so the volume picker defaults to all-checked
+    and the resumable full scan continues."""
+    try:
+        with open(STATE_PATH) as f:
+            return bool(json.load(f).get("initial_scan_complete"))
+    except (OSError, ValueError):
+        return False
+
+
+def _mark_initial_complete():
+    try:
+        with open(STATE_PATH, "w") as f:
+            json.dump({"initial_scan_complete": True}, f)
+    except OSError:
+        pass
+
+
+def list_volumes() -> dict:
+    """Currently-mounted volumes selectable for an Add Files scan (each with the
+    crawl root it maps to), plus whether a full initial scan has completed. The
+    boot disk lives at "/" (its /Volumes alias is folded in as the friendly
+    name); externals covered by the crawler's exclude list are omitted, since
+    checking them would index nothing."""
+    boot_name = "Macintosh HD"
+    externals = []
+    try:
+        for name in sorted(os.listdir("/Volumes")):
+            p = "/Volumes/" + name
+            try:
+                if os.path.realpath(p) == "/":   # the boot-volume alias
+                    boot_name = name
+                    continue
+            except OSError:
+                continue
+            if not os.path.ismount(p):           # symlink / stale mountpoint dir
+                continue
+            if crawler.should_skip(crawler.Path(p), set()):
+                continue
+            externals.append({"name": name, "root": p})
+    except OSError:
+        pass
+    volumes = [{"name": boot_name, "root": "/", "boot": True}] + externals
+    return {"volumes": volumes, "initial_scan_complete": initial_scan_done()}
+
+
+def _scan_is_full(roots) -> bool:
+    """Did this Add Files run cover every selectable volume? (Unrestricted run,
+    or an explicit root set that's a superset of all selectable volumes.)"""
+    if not roots:
+        return True
+    selectable = {v["root"] for v in list_volumes()["volumes"]}
+    return selectable.issubset(set(roots))
 
 
 PAGE = """<!doctype html>
@@ -1110,6 +1200,51 @@ PAGE = """<!doctype html>
   #ex-save:hover { border-color: rgba(var(--green-rgb), .75); }
   #ex-msg { color: var(--muted); font-size: 13px; }
 
+  /* ---- Add Files volume picker modal ---- */
+  #vpmodal {
+    position: fixed; inset: 0; z-index: 50;
+    background: rgba(10,9,12,.55); backdrop-filter: blur(7px);
+    display: flex; align-items: center; justify-content: center;
+  }
+  #vpmodal[hidden] { display: none; }
+  #vpmodal-panel {
+    position: relative;
+    background: var(--modal-bg); color: var(--text);
+    border: 1px solid var(--line); border-radius: 12px;
+    padding: 20px; width: 460px; max-width: 92vw;
+    max-height: 86vh; overflow: auto;
+    box-shadow: 0 30px 80px rgba(0,0,0,.5);
+  }
+  #vpmodal-panel h3 { margin: 0 0 6px; font-size: 15px; }
+  #vpmodal .vp-note { color: var(--muted); font-size: 13px; margin: 0 0 12px; }
+  #vp-list {
+    border: 1px solid var(--line-soft); border-radius: 7px;
+    background: var(--field); max-height: 44vh; overflow: auto; padding: 4px;
+  }
+  #vp-list label {
+    display: flex; align-items: center; gap: 9px; cursor: pointer;
+    padding: 7px 9px; border-radius: 6px; font-size: 14px;
+  }
+  #vp-list label:hover { background: rgba(var(--green-rgb), .08); }
+  #vp-list .vp-boot { color: var(--muted); font-size: 12px; margin-left: 4px; }
+  #vp-list .vp-empty { color: var(--muted); font-size: 13px; padding: 10px; }
+  #vpmodal .vp-btns { margin-top: 12px; display: flex; gap: 8px; align-items: center; }
+  #vpmodal .vp-spacer { flex: 1; }
+  #vpmodal .vp-all { color: var(--muted); font-size: 13px; display: flex;
+    align-items: center; gap: 6px; cursor: pointer; }
+  #vpmodal .vp-btns button {
+    padding: 7px 16px; border-radius: 7px; cursor: pointer;
+    border: 1px solid var(--line); background: var(--modal-btn);
+    transition: border-color .12s ease, background .12s ease;
+  }
+  #vpmodal .vp-btns button:hover { border-color: var(--rule); }
+  #vp-add {
+    border-color: rgba(var(--green-rgb), .5); color: var(--save-text); font-weight: 600;
+    background: linear-gradient(180deg, rgba(var(--green-rgb), .2), rgba(var(--green-rgb), .08));
+  }
+  #vp-add:hover { border-color: rgba(var(--green-rgb), .75); }
+  #vp-msg { color: var(--muted); font-size: 13px; }
+
   /* ---- maintenance log: amber comet border while a run is live ---- */
   #log {
     flex: 1; overflow: auto; display: none; padding: 13px 15px;
@@ -1376,6 +1511,21 @@ PAGE = """<!doctype html>
       <button id="ex-save">Save</button>
       <button id="ex-cancel">Cancel</button>
       <span id="ex-msg"></span>
+    </div>
+  </div>
+</div>
+<div id="vpmodal" hidden>
+  <div id="vpmodal-panel">
+    <button type="button" class="modal-x" id="vp-x" title="Close" aria-label="Close">&#10005;</button>
+    <h3>Add Files</h3>
+    <p class="vp-note" id="vp-note"></p>
+    <div id="vp-list"></div>
+    <div class="vp-btns">
+      <label class="vp-all"><input type="checkbox" id="vp-toggle"> Select all</label>
+      <span class="vp-spacer"></span>
+      <button id="vp-add">Add</button>
+      <button id="vp-cancel">Cancel</button>
+      <span id="vp-msg"></span>
     </div>
   </div>
 </div>
@@ -1723,6 +1873,7 @@ document.addEventListener('keydown', e => {
   hideCtx();
   exModal.hidden = true;     // every dialog closes on Escape, not just Cancel
   dupModal.hidden = true;
+  vpModal.hidden = true;
 });
 out.addEventListener('scroll', hideCtx);
 
@@ -1782,9 +1933,23 @@ function renderLog(full) {
   log.textContent = text;
 }
 
+async function launchRun(mode, roots) {
+  const body = roots ? {mode, roots} : {mode};
+  const r = await fetch('/api/run', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body)
+  });
+  const d = await r.json();
+  if (d.error) { alert(d.error); return; }
+  logAnchor = null;  // new run, new log — show it from the start
+  showLog(); poll();
+}
+
 for (const b of maintBtns) {
   b.onclick = async () => {
     const m = b.dataset.mode;
+    // Add Files opens the volume picker; it launches the run after the choice.
+    if (m === 'add') { openVolumePicker(); return; }
     const msg = isDirect(m)
       ? 'Run "' + LABELS[m] + '"?\\n\\nIt adds new files to the index and is safe '
         + 'to halt and resume — nothing already added is lost.'
@@ -1792,14 +1957,7 @@ for (const b of maintBtns) {
         + 'current DB is only replaced if it finishes. You can Halt & discard at '
         + 'any time.';
     if (!confirm(msg)) return;
-    const r = await fetch('/api/run', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({mode: b.dataset.mode})
-    });
-    const d = await r.json();
-    if (d.error) { alert(d.error); return; }
-    logAnchor = null;  // new run, new log — show it from the start
-    showLog(); poll();
+    launchRun(m);
   };
 }
 
@@ -2257,6 +2415,71 @@ document.getElementById('ex-save').onclick = async () => {
   exUser.value = (d.user || []).join('\\n');
   exMsg.textContent = 'Saved \\u2014 applies on the next crawl.';
 };
+
+// ---- Add Files: volume picker (pick which mounted volumes to scan) ----
+const vpModal = document.getElementById('vpmodal');
+const vpList = document.getElementById('vp-list');
+const vpNote = document.getElementById('vp-note');
+const vpMsg = document.getElementById('vp-msg');
+const vpToggle = document.getElementById('vp-toggle');
+let vpAllRoots = [];   // every selectable root, to detect "all checked"
+
+const vpChecks = () => [...vpList.querySelectorAll('.vp-cb')];
+function vpSyncToggle() {
+  const cbs = vpChecks();
+  vpToggle.checked = cbs.length > 0 && cbs.every(c => c.checked);
+}
+async function openVolumePicker() {
+  vpMsg.textContent = '';
+  let d;
+  try { d = await (await fetch('/api/volumes')).json(); }
+  catch (e) { alert('Could not list volumes: ' + e); return; }
+  const vols = d.volumes || [];
+  vpAllRoots = vols.map(v => v.root);
+  // First (or halted/incomplete) scan → every volume pre-checked; once a full
+  // scan has completed, default to none-checked so you opt in per scan.
+  const initial = !d.initial_scan_complete;
+  vpNote.textContent = initial
+    ? 'First scan \\u2014 every mounted volume is selected. Uncheck any you want '
+      + 'to skip, then Add.'
+    : 'Check the volumes to scan for new files, then Add. Duplicates are checked '
+      + 'across the whole index after any scan.';
+  vpList.innerHTML = '';
+  if (!vols.length) {
+    vpList.innerHTML = '<div class="vp-empty">No mounted volumes found.</div>';
+  }
+  for (const v of vols) {
+    const label = document.createElement('label');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox'; cb.className = 'vp-cb'; cb.value = v.root;
+    cb.checked = initial;
+    label.appendChild(cb);
+    const name = document.createElement('span');
+    name.textContent = v.name;
+    label.appendChild(name);
+    if (v.boot) {
+      const tag = document.createElement('span');
+      tag.className = 'vp-boot'; tag.textContent = '(system drive)';
+      label.appendChild(tag);
+    }
+    vpList.appendChild(label);
+  }
+  vpSyncToggle();
+  vpModal.hidden = false;
+}
+vpList.onchange = vpSyncToggle;
+vpToggle.onchange = () => { vpChecks().forEach(c => c.checked = vpToggle.checked); };
+document.getElementById('vp-cancel').onclick = () => { vpModal.hidden = true; };
+document.getElementById('vp-x').onclick = () => { vpModal.hidden = true; };
+document.getElementById('vp-add').onclick = () => {
+  const chosen = vpChecks().filter(c => c.checked).map(c => c.value);
+  if (!chosen.length) { vpMsg.textContent = 'Select at least one volume.'; return; }
+  // All selected → send no restriction (a clean full crawl that marks the
+  // initial scan complete on success); a subset → send the explicit roots.
+  const roots = (chosen.length === vpAllRoots.length) ? null : chosen;
+  vpModal.hidden = true;
+  launchRun('add', roots);
+};
 </script>
 </body>
 </html>
@@ -2309,6 +2532,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps(run_status()))
         elif self.path == "/api/stats":
             self._send(200, json.dumps(get_stats()))
+        elif self.path == "/api/volumes":
+            self._send(200, json.dumps(list_volumes()))
         elif self.path == "/api/excludes":
             self._send(200, json.dumps(get_excludes()))
         else:
@@ -2334,7 +2559,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps(open_path(
                 payload.get("path", ""), payload.get("action", "open"))))
         elif self.path == "/api/run":
-            self._send(200, json.dumps(start_run(payload.get("mode", ""))))
+            self._send(200, json.dumps(
+                start_run(payload.get("mode", ""), payload.get("roots"))))
         elif self.path == "/api/run/halt":
             self._send(200, json.dumps(halt_run()))
         elif self.path == "/api/excludes":
