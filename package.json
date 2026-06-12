@@ -1,6 +1,6 @@
 {
   "name": "kendex",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Kendex - local file indexer desktop app",
   "main": "electron/main.js",
   "private": true,
