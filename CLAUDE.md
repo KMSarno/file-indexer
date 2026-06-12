@@ -9,9 +9,11 @@ This project is managed with **uv** and targets **Python 3.14**.
 ```bash
 uv sync                              # install dependencies into .venv
 uv run crawler.py                    # full crawl (metadata + MD5 hashing)
-uv run crawler.py --no-hash          # fast pass: metadata only, no hashing
+uv run crawler.py --no-hash          # skip MD5 hashing, but still read content for MIME/EXIF
+uv run crawler.py --stat-only        # pure metadata: NO content reads at all (no MIME/EXIF/hash) — never downloads dataless iCloud files; the fastest first pass
 uv run crawler.py --hash-only        # only hash rows already in DB that have md5 IS NULL
 uv run crawler.py --hash-dupes       # only hash size-collision groups (skip unique-size files; the fast dedup path)
+uv run crawler.py --hash-dupes --include-dataless   # also hash dataless iCloud files (downloads them); off by default
 uv run crawler.py --prune            # remove rows for files deleted from disk (skips offline volumes)
 uv run crawler.py --prune-excluded   # remove rows now covered by the exclude list (retroactive exclude; compact after)
 uv run crawler.py --reindex-changed  # refresh rows whose file changed (size/mtime); --no-hash to skip rehashing
@@ -74,6 +76,14 @@ The user list is edited from the web UI's **Edit exclude list** button (see Quer
 
 `crawl()` takes an optional `roots` list (CLI `--roots PATH …`); when given, the walk is restricted to those roots instead of `CRAWL_ROOTS`. The boot disk lives at `/`, and `os.walk("/")` naturally descends into `/Volumes` (every external) — so in a **selective** scan, whenever `/` is among the chosen roots the walk prunes the `/Volumes` subtree (`prune_volumes`), and each *selected* external is reached via its own explicit `/Volumes/NAME` root. That composes correctly for any combination (boot-only, externals-only, mixed): unselected volumes are never walked, selected ones exactly once. The default full crawl (`roots=None`) is unchanged — `/` still covers everything via `/Volumes`. The web UI's **Add Files** volume picker is the front end for this (see Query UI section).
 
+### Content reads & dataless iCloud files
+
+`stat()` is free (it never materializes a file), but **reading a file's bytes** — for MIME sniffing (libmagic), MD5, or EXIF — forces macOS to **download a dataless iCloud placeholder** from the cloud (~1s/file), which once ground a whole-disk scan to a crawl inside an iCloud-backed `~/Documents` tree. So the per-file loop gates content reads behind `read_content = not stat_only and not is_dataless`:
+
+- **`is_dataless`** is read from `stat.st_flags & SF_DATALESS` (`0x40000000`, the macOS dataless flag) — free, no download — and stored in its own schema column (added via the `MIGRATIONS` `ALTER TABLE … ADD COLUMN IF NOT EXISTS` so existing DBs upgrade in place). A dataless file is indexed from metadata alone (`mime`/`md5`/`exif` stay null) and **never downloaded**, in *every* mode.
+- **`--stat-only`** (`crawl(stat_only=True)`) is the true content-free pass: no MIME, no EXIF, no hash, for any file. It's the fastest first sweep. (`--no-hash` still reads content for MIME/EXIF — only the hash is skipped.)
+- The hash passes (`--hash-only` / `--hash-dupes`) **skip dataless rows by default** (`coalesce(is_dataless, false) = false` in their candidate query) so a dedup pass never silently pulls gigabytes from iCloud; `--include-dataless` opts in. `get_stats` surfaces a "not downloaded" count.
+
 ### EXIF extraction
 
 Only files whose extension is in `EXIF_EXTENSIONS` (photo/video/audio formats) get the ExifTool pass — running ExifTool on every file would be prohibitively slow. ExifTool is invoked through a single long-lived `ExifToolHelper` context (`et_ctx`) that's reused across all files; it's torn down in the `finally` block.
@@ -118,6 +128,10 @@ The crawler's `--db PATH` flag (used only by this UI) reassigns the module-globa
 
 Result rows have a context menu (and keyboard shortcut) that can **Open** a file in its default app, **Reveal** it in Finder, or **Quick Look** it (`preview`). `open_path(path, action)` runs `open <path>` / `open -R <path>` / `qlmanage -p <path>` — the path is passed as an **argv element, never through a shell** — and is the one place the read-only app *acts* on the filesystem (it still never writes the DB). It is fenced the same way as every other POST: the localhost-only `Host` check and the JSON content-type/preflight CSRF guard apply, the `action` is whitelisted to `open`/`reveal`/`preview`, the path must be absolute and **must exist on disk** (a stale/offline-volume row returns an error rather than acting), and it is macOS-only. `qlmanage` blocks while its panel is open, so `preview` spawns detached, terminates the prior panel for snappy space-bar browsing, and reaps the child in a daemon thread to avoid zombies.
 
+### Move to Trash (`POST /api/trash`)
+
+The Duplicate manager's primary action moves the ticked copies to the **macOS Trash** (recoverable via Finder → Put Back — *never* a permanent delete) via `trash_paths(paths)`, which calls `send2trash` (a runtime dependency; the import is **guarded** so a missing dep degrades only the Trash feature, not server startup). Same fences as `/api/open`: localhost `Host` check, JSON/preflight CSRF guard, macOS-only, each path must be absolute and exist (`os.lexists`, so a broken symlink is still trashable). Results are **per-file** (`{trashed, failed:[{path,error}]}`) so one bad path doesn't abort the batch (capped at 5000 paths). Unlike the old export-to-`rm` flow, the UI now allows marking **every** copy of a group (you may not want the file at all) — since Trash is reversible the "keep one" hard block is gone; the client just confirms how many groups will be emptied entirely. **Export list** remains as a secondary client-side option (Blob download, for the scriptable case). Trashed rows are removed from the open modal in place (the index still lists them until the next scan/prune).
+
 ### Status strip (`GET /api/stats`)
 
 `get_stats()` returns index-level numbers for the top status strip: total row count, total bytes, per-volume row counts **with each volume's currently-mounted state** (so the UI dims rows on offline volumes), and the last successful sync time — taken from `files.db`'s mtime, which is meaningful because the copy-on-write model only replaces the file when a run commits.
@@ -133,8 +147,14 @@ The page ships a dark "instrument-console" theme by default and a **light** them
 - On launch it resolves `uv` (PATH plus the standard Homebrew / `~/.local/bin` locations), binds a free ephemeral port (`server.listen(0)`), and spawns `uv run query_app.py --host 127.0.0.1 --port <port>` as a child process, pointing `FILE_INDEXER_DB` at a `files.db` under the app's `userData` (Application Support) dir. It then `loadURL`s that loopback URL in a Chromium `BrowserWindow` — the same page the browser serves.
 - During a maintenance run it holds a macOS power assertion via `powerSaveBlocker.start('prevent-app-suspension')` (≈ `caffeinate -i`, so a multi-hour scan isn't interrupted by system sleep, without forcing the display awake) and releases it when the run ends or the app quits. **This sleep-blocker exists only in the Electron wrapper** — the plain browser-tab / LaunchAgent server has no equivalent.
 - On quit (`before-quit` / `window-all-closed`) it SIGTERMs the backend child so no orphaned `query_app.py` lingers.
+- On a slow first launch (`uv` building the venv can exceed the old 30s probe) it shows a small splash window and waits up to 120s for the backend.
+- **Auto-update** (`electron-updater`): a packaged build checks GitHub Releases on launch and once a day; a new version downloads in the background and installs on the next quit (`autoInstallOnAppQuit`, never mid-scan), with **Check for Updates…** and **Restart & Update Now** menu items. *Known limitation:* the updater fetches `…/releases.atom` unauthenticated, which 404s on a **private** repo — so auto-update needs public releases (make the repo public, or publish to a separate public releases repo). See the open issue.
 
-Because the backend is unchanged `query_app.py`, anything true of the browser UI is true inside the wrapper. The two front-ends share the one `crawler.py` engine and the one `query_app.py` server; the wrapper adds only process lifecycle, a window, and the sleep assertion.
+Because the backend is unchanged `query_app.py`, anything true of the browser UI is true inside the wrapper. The two front-ends share the one `crawler.py` engine and the one `query_app.py` server; the wrapper adds only process lifecycle, a window, the sleep assertion, and auto-update.
+
+### Signing, notarization, and release CI (`.github/workflows/release.yml`, `scripts/notarize.js`)
+
+`npm run dist` builds a DMG + ZIP. A **Developer ID** in the keychain signs it (hardened runtime + `build/entitlements.mac.plist`); the `afterSign` hook `scripts/notarize.js` notarizes via `notarytool` with an App Store Connect API key **only when the `APPLE_API_*` env vars are present** (so a plain local build is signed-but-not-notarized, or just unsigned if there's no cert — it never errors). Pushing a `v*` tag runs the macOS-arm64 workflow: it imports the cert into a temp keychain (with `security set-key-partition-list`, which is why CI signs cleanly where a raw local `codesign` can prompt/fail), syncs the package version to the tag, builds → signs → notarizes → **publishes** the DMG/ZIP **and `latest-mac.yml`** (the auto-update feed) to a GitHub Release. Six repo secrets drive it: `MAC_CERT_P12`, `MAC_CERT_PASSWORD`, `APPLE_API_KEY_P8`, `APPLE_API_KEY_ID`, `APPLE_API_ISSUER`, `APPLE_TEAM_ID`. Note: the `codesign --timestamp` step occasionally fails on a nested `locale.pak` (Apple timestamp-server flakiness) — re-running the job clears it; a retry around the build step would harden this.
 
 ## Files to ignore when reading the repo
 

@@ -93,6 +93,11 @@ version downloads in the background and installs the next time you quit
 **Check for Updates…** runs a manual check. Auto-update only runs in a packaged,
 signed build.
 
+> **Note:** the update check fetches the public releases feed unauthenticated,
+> so it returns 404 while the repo is **private**. Publishing still works;
+> auto-*checking* needs the releases to be public (make the repo public, or
+> publish to a separate public releases repo).
+
 To point the app at a specific database instead of its own:
 
 ```bash
@@ -110,14 +115,23 @@ FILE_INDEXER_DB="$HOME/FileIndexer/files.db" npm start
 - **Open from the index** — right-click any result (or use the inspector):
   Open, Quick Look, Reveal in Finder, Copy path. Space previews the selected
   row; Enter opens it.
-- **Duplicate manager** — top duplicate groups by wasted space; mark copies to
-  delete (at least one copy of each file must stay) and export a reviewed path
-  list for `rm`/`xargs`. Kendex itself never deletes files.
-- **Index maintenance** — scan for new files, refresh changed, prune deleted,
-  prune excluded, full sync, and DB compaction, all against a disposable copy
-  with live progress (file count and rate during first scans, a true
-  percentage when the run has a known total). The app holds off system sleep
-  while a run is active.
+- **Duplicate manager** — top duplicate groups by wasted space, each headline
+  naming the file. Tick copies and **Move to Trash** (recoverable via Finder
+  Put Back — never a permanent delete); you can remove *every* copy of a file
+  you don't want, or click a group's headline to select all of it. An *Export
+  list* option remains for the scriptable case.
+- **Add Files** — one indexing action: a fast metadata sweep finds everything
+  new and adds it, then a size-collision hash pass flags duplicates. It writes
+  straight to the index and is **safe to halt and resume**. A volume picker
+  lets you choose which drives to scan. The app holds off system sleep while
+  it runs, and shows live progress (file count + rate, or a true percentage
+  when a pass has a known total).
+- **iCloud-safe** — dataless/offline iCloud files are indexed from their
+  metadata **without downloading them** (reading their bytes would force a
+  download); the status strip shows how many were skipped this way.
+- **More maintenance** (under the collapsible *Maintenance* section) — reindex
+  changed, prune deleted, prune excluded, full sync, and DB compaction, all
+  against a disposable copy that's swapped in only on success.
 - **Status at a glance** — file count, indexed bytes, volume online/offline
   state, and index age above the form; rows on unmounted volumes are dimmed.
 - **Dark and light themes** — follows the system by default; the toggle in the
