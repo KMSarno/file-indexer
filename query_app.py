@@ -32,6 +32,14 @@ import duckdb
 
 import crawler  # single source of truth for DB_PATH, EXCLUDE_DEFAULTS, exclude config path
 
+try:
+    # Moves files to the macOS Trash (recoverable via Finder "Put Back"), not a
+    # permanent unlink. Guarded so a missing dep degrades the Trash feature
+    # rather than breaking server startup.
+    from send2trash import send2trash as _send2trash
+except Exception:
+    _send2trash = None
+
 DB_PATH = str(crawler.DB_PATH)  # reuse the crawler's path so the two can't drift
 WORK_DB = DB_PATH + ".scan"  # working copy the crawler writes to during a run
 STATE_PATH = DB_PATH + ".state.json"  # Kendex sidecar metadata (initial-scan flag)
@@ -514,6 +522,38 @@ def open_path(path, action="open") -> dict:
     if proc.returncode != 0:
         return {"error": (proc.stderr or "open failed").strip()}
     return {"ok": True}
+
+
+def trash_paths(paths) -> dict:
+    """Move the given files to the macOS Trash (recoverable, not a hard delete).
+
+    Same localhost-only / JSON threat model as the other POST handlers. Each
+    path must be an absolute path that exists; results are reported per-file so
+    a single failure doesn't abort the batch. Nothing here can delete a file
+    permanently — send2trash puts items in the user's Trash with Put Back.
+    """
+    if sys.platform != "darwin":
+        return {"error": "Move to Trash is only supported on macOS."}
+    if _send2trash is None:
+        return {"error": "Trash support unavailable (send2trash not installed)."}
+    if not isinstance(paths, list) or not paths:
+        return {"error": "expected a non-empty list of paths"}
+    if len(paths) > 5000:
+        return {"error": "too many paths in one request (max 5000)"}
+    trashed, failed = [], []
+    for p in paths:
+        if not isinstance(p, str) or not p.startswith("/"):
+            failed.append({"path": p, "error": "not an absolute path"})
+            continue
+        if not os.path.lexists(p):  # lexists: a broken symlink is still trashable
+            failed.append({"path": p, "error": "not found on disk"})
+            continue
+        try:
+            _send2trash(p)
+            trashed.append(p)
+        except Exception as e:
+            failed.append({"path": p, "error": f"{type(e).__name__}: {e}"})
+    return {"ok": True, "trashed": len(trashed), "failed": failed}
 
 
 def get_stats() -> dict:
@@ -1327,9 +1367,16 @@ PAGE = """<!doctype html>
   }
   .dup-head {
     margin: 10px 0 4px; padding-top: 8px; border-top: 1px solid var(--line-soft);
-    color: var(--text); font-weight: 600;
+    color: var(--text); font-weight: 600; cursor: pointer; user-select: none;
   }
+  .dup-head:hover .dup-name { text-decoration: underline; }
   .dup-head:first-child { border-top: none; margin-top: 2px; }
+  #dup-trash {
+    border-color: rgba(var(--red-rgb), .5); color: #fff; font-weight: 600;
+    background: linear-gradient(180deg, rgba(var(--red-rgb), .85), rgba(var(--red-rgb), .6));
+  }
+  #dup-trash:hover { filter: brightness(1.08); }
+  #dup-trash:disabled { filter: grayscale(.5); }
   .dup-head .dup-name { color: var(--cyan); font-weight: 700; word-break: break-all; }
   .dup-head .dup-meta { color: var(--muted); font-weight: 400; }
   .dup-head .waste { color: var(--busy-text); font-weight: 400; }
@@ -1542,9 +1589,10 @@ PAGE = """<!doctype html>
     <button type="button" class="modal-x" id="dup-x" title="Close" aria-label="Close">&#10005;</button>
     <h3>Duplicate manager</h3>
     <p class="ex-note">Top duplicate groups by wasted space (largest first).
-      Tick the copies you want to delete &mdash; at least one copy of every file
-      must stay unticked. Export produces a path list to review and feed to
-      <b>rm</b> / <b>xargs</b>; Kendex never deletes anything itself.</p>
+      Tick the copies you want to remove &mdash; at least one copy of every file
+      must stay unticked. <b>Move to Trash</b> sends them to the macOS Trash, so
+      you can restore anything with Finder&rsquo;s <b>Put&nbsp;Back</b>; nothing
+      is permanently deleted.</p>
     <div id="dup-tools">
       <button id="dup-newest" class="bar-btn">Keep newest in every group</button>
       <button id="dup-clear" class="bar-btn">Clear all marks</button>
@@ -1552,7 +1600,8 @@ PAGE = """<!doctype html>
     </div>
     <div id="dup-list"></div>
     <div class="ex-btns">
-      <button id="dup-export">Export deletion list</button>
+      <button id="dup-trash">Move to Trash</button>
+      <button id="dup-export" class="bar-btn" title="Instead export a path list for rm/xargs">Export list</button>
       <button id="dup-close">Close</button>
     </div>
   </div>
@@ -2303,15 +2352,29 @@ function buildDupGroups(data){
     by.get(md5).items.push({path: path, mtime: mtime || ''});
   }
   dupGroups = [...by.values()].filter(g => g.items.length > 1);
+  renderDupGroups();
+}
+
+// Render the (possibly trimmed) dupGroups into the modal. Kept separate from
+// buildDupGroups so we can re-render in place after files are trashed.
+function renderDupGroups(){
   dupListEl.innerHTML = '';
   if (!dupGroups.length) {
     dupListEl.textContent =
-      'No duplicate groups found (md5s are computed during indexing).';
+      'No duplicate groups (md5s are computed during indexing).';
     return;
   }
   for (const g of dupGroups) {
     const head = document.createElement('div');
     head.className = 'dup-head';
+    head.title = 'Click to select / deselect every copy in this group';
+    // Click the headline to toggle the whole group — handy when you want every
+    // copy gone (you don't want the file at all).
+    head.onclick = () => {
+      const allOn = g.items.every(it => it.cb.checked);
+      g.items.forEach(it => { it.cb.checked = !allOn; });
+      updateDupSummary();
+    };
     // Lead with the file's name so you can see WHAT is duplicated at a glance.
     // Copies are byte-identical but may sit under different names; show the
     // first, and flag when the names differ across copies.
@@ -2335,6 +2398,7 @@ function buildDupGroups(data){
       row.className = 'dup-row';
       const cb = document.createElement('input');
       cb.type = 'checkbox';
+      cb.checked = !!it.cb && it.cb.checked;  // preserve marks across re-render
       cb.onchange = updateDupSummary;
       it.cb = cb;
       const m = document.createElement('span');
@@ -2372,19 +2436,58 @@ document.getElementById('dup-clear').onclick = () => {
   for (const g of dupGroups) for (const it of g.items) it.cb.checked = false;
   updateDupSummary();
 };
-document.getElementById('dup-export').onclick = () => {
-  const doomed = [];
+// Gather the ticked copies. Removing EVERY copy of a group is allowed now
+// (you may not want the file at all) — we just count those groups so the
+// confirmation can call it out. Returns null if nothing is marked.
+function collectMarked(){
+  const paths = [];
+  let fullGroups = 0;  // groups where every copy is ticked → file gone entirely
   for (const g of dupGroups) {
     const marked = g.items.filter(it => it.cb.checked);
-    if (marked.length && marked.length === g.items.length) {
-      alert('Every copy of md5 ' + g.md5.slice(0, 10) + '… is marked — at least one '
-        + 'copy of each file must stay. Untick one and export again.');
-      return;
-    }
-    doomed.push(...marked.map(it => it.path));
+    if (marked.length && marked.length === g.items.length) fullGroups++;
+    paths.push(...marked.map(it => it.path));
   }
-  if (!doomed.length) { alert('Nothing is marked for deletion.'); return; }
-  const blob = new Blob([doomed.join('\\n') + '\\n'], {type: 'text/plain'});
+  if (!paths.length) { alert('Nothing is marked.'); return null; }
+  return { paths, fullGroups };
+}
+
+const dupTrashBtn = document.getElementById('dup-trash');
+dupTrashBtn.onclick = async () => {
+  const r = collectMarked();
+  if (!r) return;
+  let warn = '';
+  if (r.fullGroups)
+    warn = '\\n\\n' + r.fullGroups + ' of these are files where you marked EVERY '
+      + 'copy — those files will be removed entirely (still restorable from the Trash).';
+  if (!confirm('Move ' + r.paths.length + ' file' + (r.paths.length !== 1 ? 's' : '')
+      + ' to the Trash?' + warn + '\\n\\nYou can restore anything with Finder → Put Back.')) return;
+  dupTrashBtn.disabled = true; dupTrashBtn.textContent = 'Moving…';
+  let d;
+  try {
+    d = await (await fetch('/api/trash', {method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({paths: r.paths})})).json();
+  } catch (e) { alert('Request failed: ' + e); }
+  dupTrashBtn.disabled = false; dupTrashBtn.textContent = 'Move to Trash';
+  if (!d) return;
+  if (d.error) { alert(d.error); return; }
+  // Drop the trashed copies from the in-memory groups (the index still lists
+  // them until the next scan/prune) and re-render so the modal reflects reality.
+  const failed = new Set((d.failed || []).map(f => f.path));
+  for (const g of dupGroups) g.items = g.items.filter(it => !it.cb.checked || failed.has(it.path));
+  dupGroups = dupGroups.filter(g => g.items.length > 1);
+  renderDupGroups();
+  let msg = 'Moved ' + d.trashed + ' file' + (d.trashed !== 1 ? 's' : '') + ' to the Trash.';
+  if (d.failed && d.failed.length)
+    msg += '\\n\\n' + d.failed.length + ' could not be moved:\\n'
+      + d.failed.slice(0, 8).map(f => f.path + ' — ' + f.error).join('\\n');
+  alert(msg);
+};
+
+document.getElementById('dup-export').onclick = () => {
+  const r = collectMarked();
+  if (!r) return;
+  const blob = new Blob([r.paths.join('\\n') + '\\n'], {type: 'text/plain'});
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = 'kendex_delete_list.txt';
@@ -2571,6 +2674,8 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/api/open":
             self._send(200, json.dumps(open_path(
                 payload.get("path", ""), payload.get("action", "open"))))
+        elif self.path == "/api/trash":
+            self._send(200, json.dumps(trash_paths(payload.get("paths", []))))
         elif self.path == "/api/run":
             self._send(200, json.dumps(
                 start_run(payload.get("mode", ""), payload.get("roots"))))

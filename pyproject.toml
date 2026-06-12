@@ -8,5 +8,6 @@ dependencies = [
     "duckdb>=1.5.2",
     "pyexiftool>=0.5.6",
     "python-magic>=0.4.27",
+    "send2trash>=2.1.0",
     "tqdm>=4.67.3",
 ]
