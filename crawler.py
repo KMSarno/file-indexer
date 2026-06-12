@@ -75,8 +75,6 @@ EXCLUDE_DEFAULTS = {
     "/Volumes/TM7T",
     "/Volumes/TM16T",
     "/Volumes/MACBAK7T",
-    "/Volumes/BIGVFX",
-    "/Volumes/FOOTAGE",
     "/Volumes/.timemachine",                  # macOS exposes each TM snapshot here -- prune all
     "/.MobileBackups",                        # legacy local TM snapshots
     "/.Spotlight-V100",
