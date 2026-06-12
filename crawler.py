@@ -98,6 +98,17 @@ EXCLUDE_DEFAULTS = {
     "/.Trashes",
     "/private/tmp",
     "/Applications/Blackmagic RAW",           # SDK sample files ship root-only-readable -- recurring PermissionErrors
+    # macOS app-library bundles: opaque, app-managed packages (hashed internal
+    # filenames + caches) with no value to index, AND walking into them trips
+    # the per-app privacy prompts (Photos, "Media Library"/Apple Music) that a
+    # Finder-launched app keeps re-asking. Globs match the bundle anywhere it
+    # lives; should_skip prunes the whole subtree. Loose media files elsewhere
+    # are still indexed -- only the library bundles are skipped.
+    "*.photoslibrary*",                       # Photos.app  -> Photos permission
+    "*.photolibrary*",                        # legacy iPhoto
+    "*.aplibrary*",                           # legacy Aperture
+    "*.musiclibrary*",                        # Music.app   -> Media Library permission
+    "*.tvlibrary*",                           # TV.app      -> Media Library permission
 }
 
 # User-editable extra excludes, managed by the web UI's "Edit exclude list"
