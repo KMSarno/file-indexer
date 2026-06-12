@@ -1330,6 +1330,8 @@ PAGE = """<!doctype html>
     color: var(--text); font-weight: 600;
   }
   .dup-head:first-child { border-top: none; margin-top: 2px; }
+  .dup-head .dup-name { color: var(--cyan); font-weight: 700; word-break: break-all; }
+  .dup-head .dup-meta { color: var(--muted); font-weight: 400; }
   .dup-head .waste { color: var(--busy-text); font-weight: 400; }
   .dup-row { display: flex; gap: 8px; align-items: baseline; }
   .dup-row input[type="checkbox"] { accent-color: var(--red); }
@@ -2310,7 +2312,18 @@ function buildDupGroups(data){
   for (const g of dupGroups) {
     const head = document.createElement('div');
     head.className = 'dup-head';
-    head.textContent = g.items.length + ' copies · ' + fmtBytes(g.size) + ' each · ';
+    // Lead with the file's name so you can see WHAT is duplicated at a glance.
+    // Copies are byte-identical but may sit under different names; show the
+    // first, and flag when the names differ across copies.
+    const names = new Set(g.items.map(it => it.path.split('/').pop()));
+    const nm = document.createElement('span');
+    nm.className = 'dup-name';
+    nm.textContent = [...names][0] + (names.size > 1 ? ' (+' + (names.size - 1) + ' other names)' : '');
+    head.appendChild(nm);
+    const meta = document.createElement('span');
+    meta.className = 'dup-meta';
+    meta.textContent = '  ·  ' + g.items.length + ' copies · ' + fmtBytes(g.size) + ' each · ';
+    head.appendChild(meta);
     const w = document.createElement('span');
     w.className = 'waste';
     w.textContent = fmtBytes(g.size * (g.items.length - 1)) + ' reclaimable · md5 '
