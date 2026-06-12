@@ -75,6 +75,9 @@ def save_user_excludes(paths) -> dict:
         return {"error": "expected a list of paths"}
     clean = sorted({p.strip() for p in paths if crawler.is_valid_exclude(p)})
     try:
+        # EXCLUDE_CONFIG lives next to the DB (persistent, survives app updates);
+        # ensure its dir exists before writing.
+        crawler.EXCLUDE_CONFIG.parent.mkdir(parents=True, exist_ok=True)
         with open(crawler.EXCLUDE_CONFIG, "w") as f:
             json.dump(clean, f, indent=2)
     except OSError as e:

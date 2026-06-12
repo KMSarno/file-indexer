@@ -101,7 +101,15 @@ EXCLUDE_DEFAULTS = {
 # User-editable extra excludes, managed by the web UI's "Edit exclude list"
 # panel. Lives next to this script so both the crawler and query_app.py agree
 # on its location. Each entry is an absolute path prefix.
-EXCLUDE_CONFIG = Path(__file__).resolve().parent / "exclude_paths.json"
+#
+# It lives next to the DATABASE (a persistent, writable location — the desktop
+# app's Application Support dir), NOT next to this script: the script ships
+# inside the .app bundle, which is *replaced on every update* (silently wiping
+# the user's exclude list) and is code-signed/notarized (writing into it breaks
+# the signature). An exclude list saved by an older version next to the script
+# (`_LEGACY_EXCLUDE_CONFIG`) is still read as a fallback so upgrades don't lose it.
+EXCLUDE_CONFIG = DB_PATH.parent / "exclude_paths.json"
+_LEGACY_EXCLUDE_CONFIG = Path(__file__).resolve().parent / "exclude_paths.json"
 
 
 # --- Exclude matching --------------------------------------------------------
@@ -167,8 +175,13 @@ def _glob_to_like(pattern: str) -> str:
 def load_user_excludes() -> set:
     """Read the user exclude list. Missing/garbage file -> no user excludes.
     Only valid entries (absolute paths or anchored globs) are accepted."""
+    # Prefer the persistent location; fall back to a list an older version left
+    # next to the script so an upgrade carries the user's excludes forward.
+    path = EXCLUDE_CONFIG
+    if not path.exists() and _LEGACY_EXCLUDE_CONFIG.exists():
+        path = _LEGACY_EXCLUDE_CONFIG
     try:
-        with open(EXCLUDE_CONFIG) as f:
+        with open(path) as f:
             data = json.load(f)
     except (FileNotFoundError, ValueError, OSError):
         return set()
