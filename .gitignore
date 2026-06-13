@@ -5,6 +5,9 @@ node_modules/
 dist/
 dist-*/
 release/
+# Self-contained backend runtime — a build artifact (scripts/build-backend-runtime.sh
+# regenerates it; CI builds it fresh before packaging). ~100 MB, never committed.
+runtime/
 *.db
 *.db.*
 # Runtime logs (crawl.log, webapp_run.log, etc.)

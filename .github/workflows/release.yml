@@ -49,6 +49,19 @@ jobs:
       - name: Verify sources
         run: npm run check
 
+      - name: Build the self-contained Python backend runtime
+        # Bundles a relocatable CPython + deps + libmagic into runtime/, which
+        # extraResources ships into the app, so the shipped build needs no uv,
+        # no Homebrew, and no network on the user's machine. uv + libmagic are
+        # build-host-only here. electron-builder signs the embedded Mach-O next.
+        run: |
+          set -euo pipefail
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
+          brew install libmagic
+          bash scripts/build-backend-runtime.sh
+
       - name: Import the Developer ID signing certificate
         env:
           MAC_CERT_P12: ${{ secrets.MAC_CERT_P12 }}

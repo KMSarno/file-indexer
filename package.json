@@ -1,6 +1,6 @@
 {
   "name": "kendex",
-  "version": "0.3.5",
+  "version": "0.4.0",
   "description": "Kendex - local file indexer desktop app",
   "main": "electron/main.js",
   "private": true,
@@ -46,6 +46,10 @@
       {
         "from": "uv.lock",
         "to": "backend/uv.lock"
+      },
+      {
+        "from": "runtime",
+        "to": "backend/runtime"
       }
     ],
     "mac": {
