@@ -25,7 +25,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import duckdb
-import magic
+try:
+    import magic
+except Exception:  # native libmagic missing — degrade gracefully (MIME → None)
+    magic = None
 from tqdm import tqdm
 
 try:

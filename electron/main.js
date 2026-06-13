@@ -71,6 +71,25 @@ function findUv() {
   return 'uv';
 }
 
+// A packaged build ships a self-contained Python runtime under
+// Resources/backend/runtime (built by scripts/build-backend-runtime.sh): a
+// relocatable CPython, the deps installed flat, and libmagic + its database.
+// When present we launch that directly and need no uv / Homebrew / network.
+// Returns null in dev (`npm start`), where we fall back to `uv run`.
+function bundledRuntime() {
+  if (!app.isPackaged) return null;
+  const base = path.join(projectRoot(), 'runtime');
+  const binDir = path.join(base, 'python', 'bin');
+  if (!fs.existsSync(binDir)) return null;
+  const py = fs.readdirSync(binDir).find((n) => /^python3(\.\d+)?$/.test(n));
+  if (!py) return null;
+  return {
+    python: path.join(binDir, py),
+    sitePackages: path.join(base, 'site-packages'),
+    libmagic: path.join(base, 'libmagic'),
+  };
+}
+
 function getFreePort() {
   return new Promise((resolve, reject) => {
     const server = net.createServer();
@@ -222,33 +241,48 @@ async function startBackend() {
 
   const root = projectRoot();
   const dbPath = defaultDbPath();
-  const uvStateDir = path.join(app.getPath('userData'), 'uv');
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
-  fs.mkdirSync(uvStateDir, { recursive: true });
 
-  const env = {
-    ...process.env,
-    FILE_INDEXER_DB: dbPath,
-    UV_CACHE_DIR: path.join(uvStateDir, 'cache'),
-    UV_PROJECT_ENVIRONMENT: path.join(uvStateDir, 'venv'),
-    PATH: [
-      '/opt/homebrew/bin',
-      '/usr/local/bin',
-      path.join(app.getPath('home'), '.local', 'bin'),
-      process.env.PATH || '',
-    ].join(path.delimiter),
-  };
+  // Packaged: launch the bundled, self-contained Python directly (no uv needed).
+  // Dev: fall back to `uv run`, which resolves/builds the venv from source.
+  const rt = bundledRuntime();
+  let command;
+  let args;
+  let env;
+  if (rt) {
+    command = rt.python;
+    args = ['query_app.py', '--host', '127.0.0.1', '--port', String(backendPort)];
+    env = {
+      ...process.env,
+      FILE_INDEXER_DB: dbPath,
+      PYTHONPATH: rt.sitePackages,
+      PYTHONDONTWRITEBYTECODE: '1',
+      // python-magic dlopens 'libmagic.dylib' by leaf name and reads its
+      // signature database from $MAGIC; point both at the bundled copies.
+      MAGIC: path.join(rt.libmagic, 'magic.mgc'),
+      DYLD_FALLBACK_LIBRARY_PATH: rt.libmagic,
+    };
+  } else {
+    const uvStateDir = path.join(app.getPath('userData'), 'uv');
+    fs.mkdirSync(uvStateDir, { recursive: true });
+    command = findUv();
+    args = ['run', 'query_app.py', '--host', '127.0.0.1', '--port', String(backendPort)];
+    env = {
+      ...process.env,
+      FILE_INDEXER_DB: dbPath,
+      UV_CACHE_DIR: path.join(uvStateDir, 'cache'),
+      UV_PROJECT_ENVIRONMENT: path.join(uvStateDir, 'venv'),
+      PATH: [
+        '/opt/homebrew/bin',
+        '/usr/local/bin',
+        path.join(app.getPath('home'), '.local', 'bin'),
+        process.env.PATH || '',
+      ].join(path.delimiter),
+    };
+  }
 
   backendStartupLog = '';
-  backend = spawn(
-    findUv(),
-    ['run', 'query_app.py', '--host', '127.0.0.1', '--port', String(backendPort)],
-    {
-      cwd: root,
-      env,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    },
-  );
+  backend = spawn(command, args, { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
 
   backend.stdout.on('data', (chunk) => {
     const text = chunk.toString();
