@@ -1775,6 +1775,11 @@ async function run() {
   pushHistory(sql.value);
   status.textContent = 'Running…';
   out.innerHTML = '';
+  // A finished scan/maintenance run leaves the log pane showing; surface the
+  // results pane so query output is visible without first hitting "Clear
+  // output". Mid-run we leave the live log up — progress still shows in the
+  // sidebar dot, the progress bar, and the path readout.
+  if (!runActive) { log.style.display = 'none'; out.style.display = 'block'; }
   selectRow(null);
   exportBtn.style.display = 'none';
   let data;
@@ -1895,11 +1900,7 @@ function locate() {
   if (!conds.length) { alert('Enter at least one search criterion.'); return; }
   sql.value = 'SELECT path, size_bytes, created_at, modified_at, mime_type\\n'
     + 'FROM files\\nWHERE ' + conds.join('\\n  AND ') + '\\nORDER BY path';
-  if (!runActive) {  // make sure the results pane is the one showing
-    log.style.display = 'none';
-    out.style.display = 'block';
-  }
-  run();
+  run();   // run() surfaces the results pane itself
 }
 
 document.getElementById('loc-go').onclick = locate;
