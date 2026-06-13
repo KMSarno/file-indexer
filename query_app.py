@@ -47,6 +47,20 @@ MAX_ROWS = 2000  # cap returned rows so the browser never chokes on 2.5M rows
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_PATH = os.path.join(BASE_DIR, "webapp_run.log")
+
+
+def _app_version() -> str:
+    """Version from package.json next to this script (browser / LaunchAgent
+    deployment, where package.json sits in the repo dir). '' if absent, so the
+    header just shows 'Kendex'. The freestanding app uses its own About menu."""
+    try:
+        with open(os.path.join(BASE_DIR, "package.json")) as f:
+            return json.load(f).get("version", "")
+    except (FileNotFoundError, ValueError, OSError):
+        return ""
+
+
+APP_VERSION = _app_version()
 # A tqdm progress line, in either shape: the percentage-bar form when the run
 # has a known total ("Verifying:  40%|████  | 1112231/2762976 [..file/s]") or
 # the total-less counter form a first scan emits ("Indexing [/]: 917601file
@@ -841,7 +855,14 @@ PAGE = """<!doctype html>
     box-shadow: 0 4px 14px rgba(232,166,84,.18), 0 0 0 1px rgba(255,255,255,.06);
   }
   .brand-mark svg { display: block; width: 36px; height: 36px; }
-  .brand-name { font-size: 15px; font-weight: 700; letter-spacing: -.01em; }
+  .brand-name {
+    font-size: 15px; font-weight: 700; letter-spacing: -.01em;
+    display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+  }
+  /* Version sits on the Kendex row, right-justified to the subtitle's right edge
+     (the text block's width is set by the longer LOCAL INDEX CONSOLE line below),
+     in the same small gray font as that subtitle. Browser UI only. */
+  .brand-ver { font: 600 9.5px var(--mono); letter-spacing: .14em; color: var(--muted); }
   .brand-meta {
     margin-top: 2px; font: 600 9.5px var(--mono);
     text-transform: uppercase; letter-spacing: .14em; color: var(--muted);
@@ -1453,7 +1474,7 @@ PAGE = """<!doctype html>
       </svg>
     </div>
     <div>
-      <div class="brand-name">Kendex</div>
+      <div class="brand-name">Kendex<span class="brand-ver">__VERSION__</span></div>
       <div class="brand-meta">Local index console</div>
     </div>
   </div>
@@ -2646,6 +2667,7 @@ class Handler(BaseHTTPRequestHandler):
             page = (
                 PAGE.replace("__PRESETS__", json.dumps(PRESETS))
                 .replace("__MAX_ROWS__", str(MAX_ROWS))
+                .replace("__VERSION__", APP_VERSION)
             )
             self._send(200, page, "text/html; charset=utf-8")
         elif self.path == "/api/run/status":
