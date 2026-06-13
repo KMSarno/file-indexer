@@ -494,6 +494,18 @@ def crawl(do_hash: bool = True, hash_only: bool = False, dupes_only: bool = Fals
     skip_dirs = {db_dir}
     print(f"  Skipping DB directory: {db_dir}\n")
 
+    # Also exclude our own app bundle when running packaged (Electron Kendex.app).
+    # crawler.py then lives at .../Kendex.app/Contents/Resources/backend/crawler.py,
+    # and the bundled runtime ships a libmagic magic.mgc that floods the log if
+    # indexed -- and an app should never index its own guts. Detect the nearest
+    # ancestor whose name ends in '.app'; absent (dev / LaunchAgent run), nothing
+    # extra is excluded.
+    app_bundle = next((p for p in Path(__file__).resolve().parents
+                       if p.name.endswith(".app")), None)
+    if app_bundle is not None:
+        skip_dirs.add(str(app_bundle))
+        print(f"  Skipping app bundle: {app_bundle}\n")
+
     # -------------------------------------------------------------------------
     # HASH-ONLY MODE
     # -------------------------------------------------------------------------
