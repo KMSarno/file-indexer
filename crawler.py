@@ -72,9 +72,6 @@ CRAWL_ROOTS = [
 # User-added excludes are layered on top from exclude_paths.json (see
 # load_user_excludes); EXCLUDE_PATHS below is the union of the two.
 EXCLUDE_DEFAULTS = {
-    "/Volumes/TM7T",
-    "/Volumes/TM16T",
-    "/Volumes/MACBAK7T",
     "/Volumes/.timemachine",                  # macOS exposes each TM snapshot here -- prune all
     "/.MobileBackups",                        # legacy local TM snapshots
     "/.Spotlight-V100",
