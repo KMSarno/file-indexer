@@ -61,10 +61,16 @@ PY
 )"
 cp "$MAGIC_SRC" "$RUNTIME/libmagic/libmagic.dylib"
 chmod u+w "$RUNTIME/libmagic/libmagic.dylib"
-# No install_name_tool: python-magic dlopens 'libmagic.dylib' by leaf name, which
-# DYLD_FALLBACK_LIBRARY_PATH resolves to this copy — the install-id is irrelevant,
-# and rewriting it would only invalidate the signature.
-cp /opt/homebrew/share/misc/magic.mgc "$RUNTIME/libmagic/magic.mgc"
+# No install_name_tool: crawler.py points find_library at this copy by absolute
+# path (via KENDEX_LIBMAGIC), so the install-id is irrelevant and rewriting it
+# would only invalidate the signature.
+# Source magic.mgc from the SAME libmagic install as the dylib
+# (…/Cellar/libmagic/<ver>/lib → …/share/misc) so the database format version
+# can never mismatch the library — /opt/homebrew/share/misc may be owned by a
+# different (file) formula at a different version.
+MAGIC_DB="$(cd "$(dirname "$MAGIC_SRC")/.." && pwd)/share/misc/magic.mgc"
+echo "    magic.mgc from: $MAGIC_DB"
+cp "$MAGIC_DB" "$RUNTIME/libmagic/magic.mgc"
 
 echo "==> Ad-hoc sign bundled Mach-O (valid signatures for local runs; CI re-signs with Developer ID)"
 find "$RUNTIME" -type f \( -name '*.dylib' -o -name '*.so' \) -print0 \

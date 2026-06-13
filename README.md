@@ -32,10 +32,16 @@ browser-mode service or another crawl.
 
 ### Requirements
 
+**The prebuilt app bundles everything it needs** — its own Python, DuckDB, and
+libmagic — so it runs on a clean macOS (Apple Silicon) with **nothing to
+install**. Download it, drag it to Applications, and open it.
+
+The tools below are needed only for **running from source** or **browser mode**:
+
 - **macOS** (Apple Silicon for the prebuilt artifacts)
 - **[uv](https://docs.astral.sh/uv/)** — manages Python and dependencies:
   `curl -LsSf https://astral.sh/uv/install.sh | sh`
-- **libmagic** (required): `brew install libmagic`
+- **libmagic**: `brew install libmagic`
 - **exiftool** (optional, for photo/video metadata): `brew install exiftool`
 
 ### Run from source
@@ -48,10 +54,18 @@ npm start
 ### Package a build
 
 ```bash
-npm run check   # syntax checks
-npm run smoke   # boots the backend through Electron and exits
-npm run dist    # DMG + ZIP in dist/
+npm run check                           # syntax checks
+bash scripts/build-backend-runtime.sh   # bundle Python + deps + libmagic into runtime/
+npm run smoke                           # boots the backend through Electron and exits
+npm run dist                            # DMG + ZIP in dist/
 ```
+
+The `build-backend-runtime.sh` step produces `runtime/` — a relocatable CPython,
+the Python deps installed flat, and `libmagic` + its database — which
+`extraResources` ships into `Contents/Resources/backend/runtime`. That bundle is
+why the packaged app needs no uv or Homebrew. It's git-ignored; **CI rebuilds it
+automatically before packaging**, so you only run the script by hand for a local
+`npm run dist` (uv + `brew install libmagic` are the build-host prerequisites).
 
 Release builds are **Developer-ID signed and notarized** by CI, so they open
 without any Gatekeeper warning. A local `npm run dist` signs with whatever
@@ -93,10 +107,11 @@ version downloads in the background and installs the next time you quit
 **Check for Updates…** runs a manual check. Auto-update only runs in a packaged,
 signed build.
 
-> **Note:** the update check fetches the public releases feed unauthenticated,
-> so it returns 404 while the repo is **private**. Publishing still works;
-> auto-*checking* needs the releases to be public (make the repo public, or
-> publish to a separate public releases repo).
+The update check reads the public releases feed unauthenticated, so the repo
+must be **public** for auto-*checking* to work (it returns 404 while private).
+The repo is public, so this works. CI publishes each tagged release as a live
+(non-draft) GitHub Release with a `latest-mac.yml` feed; see the release
+workflow notes above.
 
 To point the app at a specific database instead of its own:
 
