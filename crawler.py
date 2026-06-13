@@ -25,6 +25,22 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import duckdb
+
+# Packaged builds export KENDEX_LIBMAGIC pointing at the bundled libmagic.dylib.
+# python-magic's loader probes find_library('magic') first, then hardcoded paths
+# like /opt/homebrew/lib — so on a machine with a different *system* libmagic it
+# would load that one (whose magic.mgc format version may not match our bundled
+# database), and a hardened-runtime app can't pass DYLD_* to redirect it. Pin
+# find_library to the bundled lib so the dylib and our bundled magic.mgc always
+# match. No-op in dev (env unset): python-magic resolves libmagic normally.
+_bundled_libmagic = os.environ.get("KENDEX_LIBMAGIC")
+if _bundled_libmagic and os.path.exists(_bundled_libmagic):
+    import ctypes.util as _ctypes_util
+    _orig_find_library = _ctypes_util.find_library
+    _ctypes_util.find_library = lambda name: (
+        _bundled_libmagic if name == "magic" else _orig_find_library(name)
+    )
+
 try:
     import magic
 except Exception:  # native libmagic missing — degrade gracefully (MIME → None)

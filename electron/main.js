@@ -102,11 +102,13 @@ function getFreePort() {
   });
 }
 
-// First launch can be slow: `uv run` resolves/builds the project virtualenv
-// before the server binds. That cold start (especially on a fresh install, or
-// the App Translocation copy) routinely exceeds 30s, so give it generous room;
-// warm launches still resolve in a second or two.
-function waitForBackend(url, timeoutMs = 120000) {
+// First launch of a freshly-installed build is slow: macOS verifies the whole
+// notarized bundle — including the embedded Python runtime's hundreds of
+// binaries — before any of it runs, which on a fresh install (or the App
+// Translocation copy, or a slow disk) can take minutes. Warm launches start in
+// a second or two. Give the cold start generous room rather than failing the
+// user with a timeout mid-verification. (Dev `uv run` cold starts also fit here.)
+function waitForBackend(url, timeoutMs = 300000) {
   const started = Date.now();
 
   return new Promise((resolve, reject) => {
@@ -262,8 +264,11 @@ async function startBackend() {
       FILE_INDEXER_DB: dbPath,
       PYTHONPATH: rt.sitePackages,
       PYTHONDONTWRITEBYTECODE: '1',
-      // python-magic dlopens 'libmagic.dylib' by leaf name and reads its
-      // signature database from $MAGIC; point both at the bundled copies.
+      // Pin python-magic to the BUNDLED libmagic + database. KENDEX_LIBMAGIC is a
+      // plain env var (survives the hardened runtime, unlike DYLD_*) that
+      // crawler.py feeds to find_library so it can't load a version-mismatched
+      // system libmagic; MAGIC points libmagic at our signature database.
+      KENDEX_LIBMAGIC: path.join(rt.libmagic, 'libmagic.dylib'),
       MAGIC: path.join(rt.libmagic, 'magic.mgc'),
       DYLD_FALLBACK_LIBRARY_PATH: rt.libmagic,
     };
