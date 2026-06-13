@@ -262,6 +262,7 @@ async function startBackend() {
     env = {
       ...process.env,
       FILE_INDEXER_DB: dbPath,
+      KENDEX_VERSION: app.getVersion(),  // shown in the page header (no package.json in backend/)
       PYTHONPATH: rt.sitePackages,
       PYTHONDONTWRITEBYTECODE: '1',
       // Pin python-magic to the BUNDLED libmagic + database. KENDEX_LIBMAGIC is a
@@ -280,6 +281,7 @@ async function startBackend() {
     env = {
       ...process.env,
       FILE_INDEXER_DB: dbPath,
+      KENDEX_VERSION: app.getVersion(),  // shown in the page header (no package.json in backend/)
       UV_CACHE_DIR: path.join(uvStateDir, 'cache'),
       UV_PROJECT_ENVIRONMENT: path.join(uvStateDir, 'venv'),
       PATH: [

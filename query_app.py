@@ -52,7 +52,7 @@ LOG_PATH = os.path.join(BASE_DIR, "webapp_run.log")
 def _app_version() -> str:
     """Version from package.json next to this script (browser / LaunchAgent
     deployment, where package.json sits in the repo dir). '' if absent, so the
-    header just shows 'Kendex'. The freestanding app uses its own About menu."""
+    header just shows 'Kendex'."""
     try:
         with open(os.path.join(BASE_DIR, "package.json")) as f:
             return json.load(f).get("version", "")
@@ -60,7 +60,11 @@ def _app_version() -> str:
         return ""
 
 
-APP_VERSION = _app_version()
+# The packaged app bundles only the .py files (no package.json next to
+# query_app.py), so the Electron wrapper passes the version from app.getVersion()
+# as KENDEX_VERSION. The browser / LaunchAgent deployment has no such env var and
+# falls back to package.json in the repo dir. Either way the header shows it.
+APP_VERSION = os.environ.get("KENDEX_VERSION") or _app_version()
 # A tqdm progress line, in either shape: the percentage-bar form when the run
 # has a known total ("Verifying:  40%|████  | 1112231/2762976 [..file/s]") or
 # the total-less counter form a first scan emits ("Indexing [/]: 917601file
