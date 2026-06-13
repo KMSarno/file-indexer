@@ -97,6 +97,17 @@ jobs:
           codesign --verify --deep --strict --verbose=2 "dist/mac-arm64/Kendex.app"
           spctl -a -t exec -vvv "dist/mac-arm64/Kendex.app"
 
+      # electron-builder publishes to a *draft* release by default. Drafts are
+      # invisible to the public releases feed, so electron-updater can't find
+      # them ("please ensure a production release exists"). Flip the release
+      # live only after the build is signed, notarized, and verified above, so
+      # the updater never sees a half-uploaded release.
+      - name: Publish the release (un-draft so the updater can see it)
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "${GITHUB_REF_NAME}" --draft=false --latest
+
       - name: Clean up the API key
         if: always()
         run: rm -f "$RUNNER_TEMP/api_key.p8"
