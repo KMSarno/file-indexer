@@ -129,7 +129,12 @@ function waitForBackend(url, timeoutMs = 120000) {
 
     const retry = () => {
       if (Date.now() - started > timeoutMs) {
-        reject(new Error('Timed out waiting for the Python backend to start.'));
+        // Surface whatever the backend printed (it's still running but never
+        // bound the port), so the failure dialog is diagnosable without
+        // relaunching from a terminal.
+        const tail = backendStartupLog.trim();
+        reject(new Error('Timed out waiting for the Python backend to start.'
+          + (tail ? `\n\n${tail}` : '')));
         return;
       }
       setTimeout(probe, 250);
