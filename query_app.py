@@ -26,6 +26,7 @@ import subprocess
 import sys
 import threading
 from datetime import datetime, timezone
+from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import duckdb
@@ -47,6 +48,24 @@ MAX_ROWS = 2000  # cap returned rows so the browser never chokes on 2.5M rows
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_PATH = os.path.join(BASE_DIR, "webapp_run.log")
+
+# Sticky "point at a different DB folder" override. The LaunchAgent re-sets the
+# default DB path (via FILE_INDEXER_DB) at every startup; this sidecar, when
+# present and valid, overrides that default so a UI switch survives restarts.
+# _DEFAULT_DB remembers the env/default so "Reset to default" can return to it.
+DB_POINTER_PATH = os.path.join(BASE_DIR, "db_pointer.json")
+_DEFAULT_DB = str(crawler.DB_PATH)
+
+
+def _read_db_pointer():
+    """The sticky DB path if the pointer file selects an existing files.db, else
+    None (missing/garbage/offline-volume all fall back to the default)."""
+    try:
+        with open(DB_POINTER_PATH) as f:
+            p = json.load(f).get("db")
+    except (FileNotFoundError, ValueError, OSError):
+        return None
+    return p if (isinstance(p, str) and os.path.isfile(p)) else None
 
 
 def _app_version() -> str:
@@ -127,20 +146,27 @@ def _cmd_live(*flags):
     return PY + " crawler.py " + " ".join(flags + ("--db", shlex.quote(DB_PATH)))
 
 
-COMMANDS = {
-    # "add" is the one user-facing indexing action: a metadata-only sweep (fast,
-    # no MD5 reads) then a size-collision-only hash pass that logs duplicates.
-    # It writes directly to the live DB and is resumable (handled specially in
-    # _run_worker); the rest below are copy-on-write (snapshot → swap on success).
-    "add":     " && ".join([_cmd_live("--no-hash"), _cmd_live("--hash-dupes")]),
-    "reindex": _cmd("--reindex-changed"),
-    "scan":    _cmd(),
-    "prune":   _cmd("--prune"),
-    "prune_excluded": _cmd("--prune-excluded"),
-    "sync":    " && ".join([_cmd("--reindex-changed"), _cmd(), _cmd("--prune")]),
-    "compact": (PY + " compact_db.py "
-                + shlex.quote(DB_PATH) + " " + shlex.quote(WORK_DB)),
-}
+def _build_commands():
+    # Rebuilt (not a module constant) so pointing the server at a different DB
+    # folder can regenerate the --db targets; _cmd/_cmd_live read DB_PATH/WORK_DB
+    # at call time, so this reflects whatever DB is currently active.
+    return {
+        # "add" is the one user-facing indexing action: a metadata-only sweep
+        # (fast, no MD5 reads) then a size-collision-only hash pass that logs
+        # duplicates. It writes directly to the live DB and is resumable (handled
+        # specially in _run_worker); the rest are copy-on-write (snapshot → swap).
+        "add":     " && ".join([_cmd_live("--no-hash"), _cmd_live("--hash-dupes")]),
+        "reindex": _cmd("--reindex-changed"),
+        "scan":    _cmd(),
+        "prune":   _cmd("--prune"),
+        "prune_excluded": _cmd("--prune-excluded"),
+        "sync":    " && ".join([_cmd("--reindex-changed"), _cmd(), _cmd("--prune")]),
+        "compact": (PY + " compact_db.py "
+                    + shlex.quote(DB_PATH) + " " + shlex.quote(WORK_DB)),
+    }
+
+
+COMMANDS = _build_commands()
 
 # Modes that write straight to the live DB instead of a working copy (additive,
 # resumable, nothing to discard).
@@ -170,6 +196,74 @@ def _open_con():
             _con = duckdb.connect(DB_PATH, read_only=True)
         except Exception:
             _con = None
+
+
+def _apply_db(path):
+    """Point the server (and the crawler's config) at a different files.db,
+    rebuilding every path derived from it. Caller reopens the connection. The
+    crawler subprocesses still get an explicit --db, so this only governs the
+    parent process: the query connection, stats/state sidecars, the exclude
+    config location, and the COMMANDS --db targets."""
+    global DB_PATH, WORK_DB, STATE_PATH, COMMANDS
+    DB_PATH = path
+    WORK_DB = path + ".scan"
+    STATE_PATH = path + ".state.json"
+    crawler.DB_PATH = Path(path)
+    crawler.EXCLUDE_CONFIG = crawler.DB_PATH.parent / "exclude_paths.json"
+    COMMANDS = _build_commands()
+
+
+def get_db() -> dict:
+    """Current DB path, the startup default, and whether a sticky override is set."""
+    return {"current": DB_PATH, "default": _DEFAULT_DB,
+            "sticky": _read_db_pointer() is not None}
+
+
+def set_db(folder=None, reset=False) -> dict:
+    """Switch the active DB (or reset to the default) and persist the choice.
+    `folder` is the directory that holds files.db. Refused while a run is active
+    (the working copy/swap is mid-flight). Pure path validation — the folder is
+    checked to exist and contain files.db; it never reaches a shell."""
+    with _run_lock:
+        if _run["active"]:
+            return {"error": f"a task is running ({_run['mode']}); switch after it finishes"}
+
+    if reset:
+        target = _DEFAULT_DB
+    else:
+        if not isinstance(folder, str) or not folder.strip():
+            return {"error": "no folder given"}
+        folder = folder.strip()
+        if not os.path.isdir(folder):
+            return {"error": f"not a folder: {folder}"}
+        target = os.path.join(folder, "files.db")
+        if not os.path.isfile(target):
+            return {"error": f"no files.db in that folder: {folder}"}
+
+    # Drop the old read-only connection, repoint every derived path, reopen.
+    global _con
+    with _lock:
+        if _con is not None:
+            try:
+                _con.close()
+            except Exception:
+                pass
+            _con = None
+    _apply_db(target)
+    _open_con()
+
+    try:
+        if reset:
+            _rm(DB_POINTER_PATH)
+        else:
+            with open(DB_POINTER_PATH, "w") as f:
+                json.dump({"db": target}, f)
+    except OSError as e:
+        return {"ok": True, "current": DB_PATH, "default": _DEFAULT_DB,
+                "sticky": False, "warn": f"switched, but couldn't persist: {e}"}
+
+    return {"ok": True, "current": DB_PATH, "default": _DEFAULT_DB,
+            "sticky": not reset}
 
 
 def _rm(path):
@@ -1267,6 +1361,42 @@ PAGE = """<!doctype html>
   }
   #ex-save:hover { border-color: rgba(var(--green-rgb), .75); }
   #ex-msg { color: var(--muted); font-size: 13px; }
+  /* ---- database-folder modal (mirrors the exclude modal) ---- */
+  #dbmodal {
+    position: fixed; inset: 0; z-index: 50;
+    background: rgba(10,9,12,.55); backdrop-filter: blur(7px);
+    display: flex; align-items: center; justify-content: center;
+  }
+  #dbmodal[hidden] { display: none; }
+  #dbmodal-panel {
+    position: relative;
+    background: var(--modal-bg); color: var(--text);
+    border: 1px solid var(--line); border-radius: 12px;
+    padding: 20px; width: 560px; max-width: 92vw;
+    max-height: 86vh; overflow: auto;
+    box-shadow: 0 30px 80px rgba(0,0,0,.5);
+  }
+  #dbmodal-panel h3 { margin: 0 0 6px; font-size: 15px; }
+  #dbmodal .ex-note { color: var(--muted); font-size: 13px; margin: 0 0 10px; }
+  #db-current { font: 12px var(--mono); word-break: break-all; color: var(--strip-text); }
+  #db-folder {
+    width: 100%; box-sizing: border-box; margin: 4px 0; padding: 7px 9px;
+    border: 1px solid var(--line); border-radius: 7px;
+    background: var(--field); color: var(--text); font: 13px var(--mono);
+  }
+  #dbmodal .ex-btns { margin-top: 12px; display: flex; gap: 8px; align-items: center; }
+  #dbmodal .ex-btns button {
+    padding: 7px 16px; border-radius: 7px; cursor: pointer;
+    border: 1px solid var(--line); background: var(--modal-btn);
+    transition: border-color .12s ease, background .12s ease;
+  }
+  #dbmodal .ex-btns button:hover { border-color: var(--rule); }
+  #db-switch {
+    border-color: rgba(var(--green-rgb), .5); color: var(--save-text); font-weight: 600;
+    background: linear-gradient(180deg, rgba(var(--green-rgb), .2), rgba(var(--green-rgb), .08));
+  }
+  #db-switch:hover { border-color: rgba(var(--green-rgb), .75); }
+  #db-msg { color: var(--muted); font-size: 13px; }
 
   /* ---- Add Files volume picker modal ---- */
   #vpmodal {
@@ -1508,6 +1638,7 @@ PAGE = """<!doctype html>
   <div id="tools">
     <button id="dupes-open">Duplicate manager</button>
     <button id="edit-excludes">Edit exclude list</button>
+    <button id="edit-db">Database folder</button>
     <button id="clearlog">Clear output</button>
   </div>
   <div id="side-foot">
@@ -1588,6 +1719,28 @@ PAGE = """<!doctype html>
       <button id="ex-save">Save</button>
       <button id="ex-cancel">Cancel</button>
       <span id="ex-msg"></span>
+    </div>
+  </div>
+</div>
+<div id="dbmodal" hidden>
+  <div id="dbmodal-panel">
+    <button type="button" class="modal-x" id="db-x" title="Close" aria-label="Close">&#10005;</button>
+    <h3>Database folder</h3>
+    <p class="ex-note">Point this server at a different <code>files.db</code>. Give the
+      <b>folder</b> that contains it (its sidecars live alongside). The choice is
+      <b>sticky</b> &mdash; it survives restarts until you switch again or reset. The
+      switch is instant; queries resume against the new database. Refused while a
+      maintenance run is in progress.</p>
+    <div>Current: <b id="db-current">&hellip;</b></div>
+    <div id="db-sticky-note" class="ex-note"></div>
+    <div style="margin-top:10px"><b>New folder</b> &mdash; absolute path to a folder
+      containing <code>files.db</code>:</div>
+    <input id="db-folder" spellcheck="false" placeholder="/Volumes/SomeDrive/KendexDB">
+    <div class="ex-btns">
+      <button id="db-switch">Switch</button>
+      <button id="db-reset">Reset to default</button>
+      <button id="db-cancel">Cancel</button>
+      <span id="db-msg"></span>
     </div>
   </div>
 </div>
@@ -1954,6 +2107,7 @@ document.addEventListener('keydown', e => {
   exModal.hidden = true;     // every dialog closes on Escape, not just Cancel
   dupModal.hidden = true;
   vpModal.hidden = true;
+  dbModal.hidden = true;
 });
 out.addEventListener('scroll', hideCtx);
 
@@ -2561,6 +2715,47 @@ document.getElementById('ex-save').onclick = async () => {
   exMsg.textContent = 'Saved \\u2014 applies on the next crawl.';
 };
 
+// ---- Database folder: point the server at a different files.db (sticky) ----
+const dbModal = document.getElementById('dbmodal');
+const dbFolder = document.getElementById('db-folder');
+const dbMsg = document.getElementById('db-msg');
+function dbRender(d) {
+  document.getElementById('db-current').textContent = d.current || '?';
+  document.getElementById('db-sticky-note').textContent = d.sticky
+    ? 'A sticky override is active \\u2014 this folder loads on every restart.'
+    : 'Using the default database (no override).';
+}
+document.getElementById('edit-db').onclick = async () => {
+  dbMsg.textContent = ''; dbFolder.value = '';
+  try { dbRender(await (await fetch('/api/db')).json()); }
+  catch (e) { alert('Could not load DB info: ' + e); return; }
+  dbModal.hidden = false;
+};
+document.getElementById('db-cancel').onclick = () => { dbModal.hidden = true; };
+document.getElementById('db-x').onclick = () => { dbModal.hidden = true; };
+async function dbPost(body, working) {
+  dbMsg.textContent = working;
+  let d;
+  try {
+    d = await (await fetch('/api/db', {method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body)})).json();
+  } catch (e) { dbMsg.textContent = ''; alert('Request failed: ' + e); return; }
+  if (d.error) { dbMsg.textContent = ''; alert(d.error); return; }
+  dbRender(d);
+  dbMsg.textContent = (d.warn ? d.warn : 'Switched.');
+  loadStats();   // status strip reflects the new database
+};
+document.getElementById('db-switch').onclick = () => {
+  const f = dbFolder.value.trim();
+  if (!f) { alert('Enter the folder that contains files.db.'); return; }
+  dbPost({folder: f}, 'Switching\\u2026');
+};
+document.getElementById('db-reset').onclick = () => {
+  if (!confirm('Reset to the default database?')) return;
+  dbPost({reset: true}, 'Resetting\\u2026');
+};
+
 // ---- Add Files: volume picker (pick which mounted volumes to scan) ----
 const vpModal = document.getElementById('vpmodal');
 const vpList = document.getElementById('vp-list');
@@ -2682,6 +2877,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps(list_volumes()))
         elif self.path == "/api/excludes":
             self._send(200, json.dumps(get_excludes()))
+        elif self.path == "/api/db":
+            self._send(200, json.dumps(get_db()))
         else:
             self._send(404, json.dumps({"error": "not found"}))
 
@@ -2713,6 +2910,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps(halt_run()))
         elif self.path == "/api/excludes":
             self._send(200, json.dumps(save_user_excludes(payload.get("user", []))))
+        elif self.path == "/api/db":
+            self._send(200, json.dumps(
+                set_db(payload.get("folder"), payload.get("reset", False))))
         else:
             self._send(404, json.dumps({"error": "not found"}))
 
@@ -2725,6 +2925,9 @@ def main():
     ap.add_argument("--port", type=int, default=8800)
     ap.add_argument("--host", default="127.0.0.1")
     args = ap.parse_args()
+    sticky = _read_db_pointer()       # a saved "DB folder" override survives restarts
+    if sticky:
+        _apply_db(sticky)
     _open_con()
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     url = f"http://{args.host}:{args.port}"
