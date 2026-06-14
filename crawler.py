@@ -232,17 +232,20 @@ EXIF_EXTENSIONS = {
     ".mp3", ".wav", ".aiff", ".flac", ".m4a",
 }
 
-# --- Include-by-type filter --------------------------------------------------
-# An optional "index only these file extensions" filter, the type-level twin of
-# the path-level exclude list. It is matched on the file extension *before* any
-# content read, so a non-included file costs only its (free) stat -- no MIME,
-# MD5, or EXIF, and no row. Net effect: a smaller DB and a faster crawl.
+# --- Listed-types tag --------------------------------------------------------
+# An optional "these are the file types I care about" list, the type-level twin
+# of the path-level exclude list. It does NOT gate indexing: the crawl still
+# walks and records every non-excluded file. Instead each row is tagged with the
+# `is_listed_type` flag (true when its extension is in the set below), and the
+# query UI's "Listed types only" switch filters on that flag. Net effect: a
+# complete index, with a one-click view that hides the types you don't care about.
 #
 # Unlike the exclude defaults (which are locked for safety -- see EXCLUDE_DEFAULTS),
 # every INCLUDE default is freely removable from the UI: omitting a type can't
-# corrupt anything, it just means "don't index that type". The config stores the
-# two small deltas from the defaults, so a future release growing INCLUDE_DEFAULTS
-# is picked up automatically instead of freezing the user to today's set.
+# corrupt anything, it just means "don't tag that type as listed". The config
+# stores the two small deltas from the defaults, so a future release growing
+# INCLUDE_DEFAULTS is picked up automatically instead of freezing the user to
+# today's set.
 INCLUDE_DEFAULTS = frozenset({
     # documents
     ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
@@ -311,11 +314,12 @@ def load_include_config() -> dict:
 
 
 def effective_includes():
-    """The active include set as a frozenset, or None when the filter is OFF
-    (index every type). OFF when no config file exists -- so the default, back-
-    compatible behavior is "index everything" until the user saves an include
-    list -- or when the effective set is empty (the safe failure mode: never
-    silently index zero files)."""
+    """The active listed-type set as a frozenset, or None when the list is OFF
+    (every type counts as listed). OFF when no config file exists -- so the
+    default, back-compatible behavior is "treat all types as listed" until the
+    user saves a list -- or when the effective set is empty (the safe failure
+    mode: never silently tag zero files, which would make the "Listed types
+    only" switch hide everything)."""
     if not INCLUDE_CONFIG.exists() and not _LEGACY_INCLUDE_CONFIG.exists():
         return None
     cfg = load_include_config()
@@ -323,7 +327,7 @@ def effective_includes():
     return frozenset(eff) if eff else None
 
 
-# Active include filter, computed once at import (the crawl subprocess re-reads
+# Active listed-type set, computed once at import (the crawl subprocess re-reads
 # it on its own startup; query_app.py reads the deltas fresh per request).
 INCLUDE_EXTENSIONS = effective_includes()
 
@@ -353,6 +357,7 @@ SCHEMA_STATEMENTS = [
         mime_type           TEXT,
         is_symlink          BOOLEAN,
         is_dataless         BOOLEAN,
+        is_listed_type      BOOLEAN,
         is_hidden           BOOLEAN,
         inode               BIGINT,
         hard_link_count     BIGINT,
@@ -416,6 +421,7 @@ SF_DATALESS = 0x40000000
 # brings an existing files.db up to date without a rebuild.
 MIGRATIONS = [
     "ALTER TABLE files ADD COLUMN IF NOT EXISTS is_dataless BOOLEAN",
+    "ALTER TABLE files ADD COLUMN IF NOT EXISTS is_listed_type BOOLEAN",
 ]
 
 
@@ -618,12 +624,13 @@ def crawl(do_hash: bool = True, hash_only: bool = False, dupes_only: bool = Fals
         skip_dirs.add(str(app_bundle))
         print(f"  Skipping app bundle: {app_bundle}\n")
 
-    # Report the include-by-type filter (None => index every type).
+    # Report the listed-types tag (None => every type counts as listed). Note
+    # this only tags rows; every non-excluded file is indexed regardless.
     if INCLUDE_EXTENSIONS is not None:
-        print(f"  Indexing only {len(INCLUDE_EXTENSIONS)} file types: "
+        print(f"  Tagging {len(INCLUDE_EXTENSIONS)} file types as listed: "
               f"{' '.join(sorted(INCLUDE_EXTENSIONS))}\n")
     else:
-        print("  Indexing all file types (include filter off)\n")
+        print("  Tagging all file types as listed (no list configured)\n")
 
     # -------------------------------------------------------------------------
     # HASH-ONLY MODE
@@ -730,7 +737,7 @@ def crawl(do_hash: bool = True, hash_only: bool = False, dupes_only: bool = Fals
     INSERT_SQL = """
         INSERT OR IGNORE INTO files (
             path, volume, filename, extension, size_bytes, md5,
-            mime_type, is_symlink, is_dataless, is_hidden, inode, hard_link_count,
+            mime_type, is_symlink, is_dataless, is_listed_type, is_hidden, inode, hard_link_count,
             created_at, modified_at, accessed_at, indexed_at,
             exif_camera_make, exif_camera_model, exif_shoot_date,
             exif_gps_lat, exif_gps_lon, exif_image_width, exif_image_height,
@@ -738,7 +745,7 @@ def crawl(do_hash: bool = True, hash_only: bool = False, dupes_only: bool = Fals
             exif_focal_length, exif_aperture, exif_iso, exif_raw
         ) VALUES (
             ?, ?, ?, ?, ?, ?,
-            ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?, ?,
             ?, ?, ?, ?,
             ?, ?, ?,
             ?, ?, ?, ?,
@@ -831,12 +838,6 @@ def crawl(do_hash: bool = True, hash_only: bool = False, dupes_only: bool = Fals
                     pbar.set_description_str(f"Indexing [{dir_volume}]")
 
                 for filename in filenames:
-                    # Include filter (if active): decided on the extension alone,
-                    # before stat/resume/content -- a non-included type costs
-                    # nothing and never gets a row. None => filter off (index all).
-                    if (INCLUDE_EXTENSIONS is not None
-                            and os.path.splitext(filename)[1].lower() not in INCLUDE_EXTENSIONS):
-                        continue
                     file_path = dir_path / filename
                     pbar.update(1)
 
@@ -878,6 +879,12 @@ def crawl(do_hash: bool = True, hash_only: bool = False, dupes_only: bool = Fals
                         # bytes are read. stat() (and thus the flag) is free, so
                         # we index it from metadata and never touch its content.
                         is_dataless = bool(getattr(stat, "st_flags", 0) & SF_DATALESS)
+                        # Tag the row's type against the listed-types set (free,
+                        # extension-only). None => no list configured, so every
+                        # type counts as listed. The "Listed types only" query
+                        # switch filters on this flag; the file is indexed either way.
+                        is_listed_type = (INCLUDE_EXTENSIONS is None
+                                          or ext in INCLUDE_EXTENSIONS)
                         # stat_only: a pure metadata sweep — no content reads at
                         # all, for any file. The fast first pass.
                         read_content = not stat_only and not is_dataless
@@ -913,6 +920,7 @@ def crawl(do_hash: bool = True, hash_only: bool = False, dupes_only: bool = Fals
                             mime,
                             is_symlink,
                             is_dataless,
+                            is_listed_type,
                             is_hidden,
                             stat.st_ino,
                             stat.st_nlink,
@@ -1152,46 +1160,54 @@ def prune_excluded():
     print(f"{'='*60}\n")
 
 
-def prune_not_included():
-    """Remove DB rows whose extension is not in the active include set.
+def reflag_types():
+    """Recompute every row's is_listed_type flag from the active listed-types set.
 
-    The retroactive counterpart to the crawl-time include filter (like
-    --prune-excluded is to the exclude list): after narrowing the include list,
-    this deletes rows for now-excluded types. No-ops when the filter is off
-    (INCLUDE_EXTENSIONS is None -- everything is "included"). Pure SQL, no disk
-    access and no mount guard, so it is safe with volumes offline.
+    The retroactive counterpart to the crawl-time tagging (like --prune-excluded
+    is to the exclude list): after editing the list, this re-evaluates the flag
+    on rows the walk won't revisit (resume skips already-indexed paths). It is a
+    single bulk UPDATE over the whole table, so it touches every row regardless
+    of when it was added -- that's the point, since the walk only tags new rows.
+    Non-destructive: it only flips a boolean, never deletes a row, so there is
+    nothing to compact afterward. Pure SQL, no disk access and no mount guard,
+    so it is safe with volumes offline. When no list is configured every row is
+    tagged listed (the "Listed types only" switch is then a no-op).
     """
     print(f"\n{'='*60}")
-    print("  Prune-not-included mode — removing rows whose type is excluded")
+    print("  Re-tag mode — recomputing the is_listed_type flag")
     print(f"  Database: {DB_PATH}")
     print(f"{'='*60}\n")
 
-    if INCLUDE_EXTENSIONS is None:
-        print("  Include filter is off — every type is indexed, nothing to prune.\n")
-        return
-
     con = duckdb.connect(str(DB_PATH))
-    before = con.execute("SELECT count(*) FROM files").fetchone()[0]
-    print(f"  {before:,} rows in index")
-    print(f"  Keeping {len(INCLUDE_EXTENSIONS)} types: "
-          f"{' '.join(sorted(INCLUDE_EXTENSIONS))}\n")
+    # Ensure the schema is current — on a DB that predates the is_listed_type
+    # column this is the first op that needs it, and (unlike the crawl path)
+    # nothing here has run the migrations yet. init_db is idempotent.
+    init_db(con)
+    total = con.execute("SELECT count(*) FROM files").fetchone()[0]
 
-    exts = sorted(INCLUDE_EXTENSIONS)
-    placeholders = ", ".join("?" for _ in exts)
-    con.execute(
-        f"DELETE FROM files WHERE coalesce(lower(extension), '') NOT IN ({placeholders})",
-        exts,
-    )
+    if INCLUDE_EXTENSIONS is None:
+        print(f"  {total:,} rows; no list configured — tagging every row as listed.\n")
+        con.execute("UPDATE files SET is_listed_type = TRUE")
+    else:
+        exts = sorted(INCLUDE_EXTENSIONS)
+        print(f"  {total:,} rows; {len(exts)} listed types: {' '.join(exts)}\n")
+        placeholders = ", ".join("?" for _ in exts)
+        con.execute(
+            f"UPDATE files SET is_listed_type = "
+            f"(coalesce(lower(extension), '') IN ({placeholders}))",
+            exts,
+        )
     con.commit()
-    after = con.execute("SELECT count(*) FROM files").fetchone()[0]
+    listed = con.execute(
+        "SELECT count(*) FROM files WHERE coalesce(is_listed_type, false)"
+    ).fetchone()[0]
     con.close()
 
     print(f"\n{'='*60}")
-    print("  Prune-not-included complete")
-    print(f"  Before:   {before:,}")
-    print(f"  Deleted:  {before - after:,}")
-    print(f"  After:    {after:,}")
-    print("  Compact the DB to reclaim the freed space.")
+    print("  Re-tag complete")
+    print(f"  Listed:     {listed:,}")
+    print(f"  Not listed: {total - listed:,}")
+    print(f"  Total:      {total:,}")
     print(f"  Database: {DB_PATH}")
     print(f"{'='*60}\n")
 
@@ -1354,7 +1370,7 @@ if __name__ == "__main__":
     parser.add_argument("--include-dataless", action="store_true", help="With --hash-only/--hash-dupes, also hash dataless iCloud files (downloads them); off by default")
     parser.add_argument("--prune",     action="store_true", help="Remove DB rows for files that no longer exist on disk (skips offline volumes)")
     parser.add_argument("--prune-excluded", action="store_true", help="Remove DB rows now covered by the exclude list (retroactive exclude; compact after)")
-    parser.add_argument("--prune-not-included", action="store_true", help="Remove DB rows whose type is not in the include list (retroactive include; compact after)")
+    parser.add_argument("--reflag-types", action="store_true", help="Recompute the is_listed_type flag on every row from the current listed-types list (retroactive tag; non-destructive)")
     parser.add_argument("--reindex-changed", action="store_true", help="Refresh rows whose on-disk file changed (size/mtime); skips offline volumes")
     parser.add_argument("--roots", nargs="+", metavar="PATH", help="Restrict the crawl to these root paths (selective per-volume scan, e.g. / or /Volumes/NAME); default is all of CRAWL_ROOTS")
     parser.add_argument("--db", help="Operate on this DB file instead of the default (used by the web UI to run against a disposable copy)")
@@ -1367,8 +1383,8 @@ if __name__ == "__main__":
         prune()
     elif args.prune_excluded:
         prune_excluded()
-    elif args.prune_not_included:
-        prune_not_included()
+    elif args.reflag_types:
+        reflag_types()
     elif args.reindex_changed:
         reindex_changed(do_hash=not args.no_hash)
     elif args.hash_dupes:

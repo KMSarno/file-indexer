@@ -171,7 +171,7 @@ COMMANDS = {
     "scan":    _cmd(),
     "prune":   _cmd("--prune"),
     "prune_excluded": _cmd("--prune-excluded"),
-    "prune_not_included": _cmd("--prune-not-included"),
+    "reflag_types": _cmd("--reflag-types"),
     "sync":    " && ".join([_cmd("--reindex-changed"), _cmd(), _cmd("--prune")]),
     "compact": (PY + " compact_db.py "
                 + shlex.quote(DB_PATH) + " " + shlex.quote(WORK_DB)),
@@ -1263,6 +1263,19 @@ PAGE = """<!doctype html>
   }
   #locate input[type="checkbox"] { min-height: 0; accent-color: var(--cyan); }
   #locate label { display: flex; gap: 6px; align-items: center; color: var(--btn-text); }
+  /* The "Listed types only" switch reads more prominently than a plain field:
+     an accent pill that lights up when active, so its on/off state is obvious. */
+  #loc-listed-wrap {
+    font-weight: 700; font-size: 13px; padding: 6px 11px; border-radius: 7px;
+    border: 1px solid rgba(var(--cyan-rgb), .55); color: var(--text);
+    background: rgba(var(--cyan-rgb), .08); cursor: pointer; user-select: none;
+    transition: background .12s ease, border-color .12s ease;
+  }
+  #loc-listed-wrap:hover { border-color: var(--cyan); }
+  #loc-listed-wrap.on {
+    background: rgba(var(--cyan-rgb), .22); border-color: var(--cyan);
+    box-shadow: 0 0 0 2px rgba(var(--cyan-rgb), .14);
+  }
   .utc-note { font-size: 12px; color: var(--muted); align-self: center; }
 
   /* ---- exclude-list modal ---- */
@@ -1579,7 +1592,7 @@ PAGE = """<!doctype html>
       <button data-mode="reindex">Reindex changed</button>
       <button data-mode="prune">Prune deleted</button>
       <button data-mode="prune_excluded">Prune excluded</button>
-      <button data-mode="prune_not_included">Prune not-included</button>
+      <button data-mode="reflag_types" title="Re-tag every indexed row against the current include list, so the &quot;Listed types only&quot; switch reflects your latest edits. Non-destructive — only updates a flag, deletes nothing.">Re-tag types</button>
       <button data-mode="sync">Full sync (all 3)</button>
       <button data-mode="compact">Compact DB</button>
     </details>
@@ -1622,6 +1635,9 @@ PAGE = """<!doctype html>
     </select>
     <input id="loc-vol" size="18" placeholder="TB5_DOCK8, OWC HD1" list="vol-list">
     <datalist id="vol-list"></datalist>
+    <label id="loc-listed-wrap" title="When ON, Locate returns only files whose type is on your include list (your &quot;listed&quot; types). Manage the list under Tools &rarr; Edit include list.">
+      <input type="checkbox" id="loc-listed"> Listed types only
+    </label>
     <button id="loc-go">Locate &#9654;</button>
   </fieldset>
   <textarea id="sql" spellcheck="false"
@@ -1675,16 +1691,17 @@ PAGE = """<!doctype html>
 <div id="inmodal" hidden>
   <div id="inmodal-panel">
     <button type="button" class="modal-x" id="in-x" title="Close" aria-label="Close">&#10005;</button>
-    <h3>Index only these file types</h3>
-    <p class="ex-note">When any type is selected, the crawler indexes <b>only</b>
-      those extensions &mdash; everything else costs nothing and gets no row, for
-      a smaller, faster index. Uncheck a built-in type to skip it, or add your own
-      below. <b>Leave everything unchecked and empty to index all file types</b>
-      (the filter is then off). Changes take effect on the <b>next</b> crawl; to
-      apply to what's already indexed, run <b>Prune not-included</b> then
-      <b>Compact DB</b>.</p>
+    <h3>Listed file types</h3>
+    <p class="ex-note">The crawler indexes <b>every</b> file regardless &mdash;
+      this list only flags the types you care about as <b>listed</b>. The
+      <b>Listed types only</b> switch (top bar) then hides everything else from
+      query results; unlisted files stay in the index, just out of view. Uncheck a
+      built-in type to drop it from the list, or add your own below. <b>Leave
+      everything unchecked and empty to treat all types as listed</b> (the switch
+      is then a no-op). Changes apply to <b>new</b> files on the next crawl; to
+      re-tag rows already indexed, run <b>Re-tag types</b>.</p>
     <div id="in-status"></div>
-    <div><b>Built-in types</b> &mdash; checked types are indexed:</div>
+    <div><b>Built-in types</b> &mdash; checked types are listed:</div>
     <div id="in-grid"></div>
     <div><b>Your extra types</b> &mdash; one per line (e.g. <code>sketch</code>, <code>.raf</code>):</div>
     <textarea id="in-added" spellcheck="false"
@@ -2028,6 +2045,10 @@ function locate() {
     conds.push('volume ' + op + ' (' + vols.map(sqlStr).join(', ') + ')');
   }
   if (!conds.length) { alert('Enter at least one search criterion.'); return; }
+  // "Listed types only" switch: a modifier on the search above (not a search by
+  // itself) — restrict to rows whose type is on the include list. NULL
+  // (a row never re-tagged) counts as not-listed.
+  if (locListed.checked) conds.push('coalesce(is_listed_type, false)');
   sql.value = 'SELECT path, size_bytes, created_at, modified_at, mime_type\\n'
     + 'FROM files\\nWHERE ' + conds.join('\\n  AND ') + '\\nORDER BY path';
   run();   // run() surfaces the results pane itself
@@ -2038,6 +2059,22 @@ for (const el of [locName, locExt, locFrom, locTo, locVol])
   el.addEventListener('keydown', e => {
     if (e.key === 'Enter') { e.preventDefault(); locate(); }
   });
+
+// "Listed types only" switch — persisted like the theme, restricts Locate to
+// rows tagged is_listed_type. Toggling re-runs the current search at once when
+// criteria are present, so the effect is immediate rather than next-search.
+const locListed = document.getElementById('loc-listed');
+const locListedWrap = document.getElementById('loc-listed-wrap');
+function applyListed() { locListedWrap.classList.toggle('on', locListed.checked); }
+locListed.checked = localStorage.getItem('kendexListedOnly') === '1';
+applyListed();
+locListed.addEventListener('change', () => {
+  localStorage.setItem('kendexListedOnly', locListed.checked ? '1' : '0');
+  applyListed();
+  const hasCriteria = locName.value.trim() || locExt.value.trim()
+    || locFrom.value || locTo.value || locVol.value.trim();
+  if (hasCriteria) locate();
+});
 
 // ---- Row context menu: open / reveal / copy a result's file path ----
 const ctxMenu = document.getElementById('ctxmenu');
@@ -2095,7 +2132,7 @@ const clearBtn = document.getElementById('clearlog');
 const LABELS = {reindex:'Reindex changed', scan:'Scan for new',
                 add:'Add Files',
                 prune:'Prune deleted', prune_excluded:'Prune excluded',
-                prune_not_included:'Prune not-included',
+                reflag_types:'Re-tag types',
                 sync:'Full sync', compact:'Compact DB'};
 const DIRECT_MODES = ['add'];   // write straight to the DB; halting keeps progress
 const isDirect = m => DIRECT_MODES.includes(m);
@@ -2668,7 +2705,7 @@ document.getElementById('ex-save').onclick = async () => {
   exMsg.textContent = 'Saved \\u2014 applies on the next crawl.';
 };
 
-// ---- Edit include list (index only these file types; writes include_config.json) ----
+// ---- Edit include list (tags these types as "listed"; writes include_config.json) ----
 const inModal = document.getElementById('inmodal');
 const inGrid = document.getElementById('in-grid');
 const inAdded = document.getElementById('in-added');
@@ -2681,9 +2718,9 @@ function inUpdateStatus() {
   const checked = [...inGrid.querySelectorAll('input')].filter(c => c.checked).length;
   const n = checked + inAddedLines().length;
   inStatus.innerHTML = n
-    ? 'Filter is <b>ON</b> \\u2014 indexing only <b>' + n + '</b> file '
-      + (n === 1 ? 'type' : 'types') + '.'
-    : 'Filter is <b>OFF</b> \\u2014 indexing <b>all</b> file types.';
+    ? 'List is <b>ON</b> \\u2014 <b>' + n + '</b> file '
+      + (n === 1 ? 'type' : 'types') + ' tagged as listed.'
+    : 'List is <b>OFF</b> \\u2014 <b>all</b> file types count as listed.';
 }
 document.getElementById('edit-includes').onclick = async () => {
   inMsg.textContent = '';
