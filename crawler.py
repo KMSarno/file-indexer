@@ -232,6 +232,102 @@ EXIF_EXTENSIONS = {
     ".mp3", ".wav", ".aiff", ".flac", ".m4a",
 }
 
+# --- Include-by-type filter --------------------------------------------------
+# An optional "index only these file extensions" filter, the type-level twin of
+# the path-level exclude list. It is matched on the file extension *before* any
+# content read, so a non-included file costs only its (free) stat -- no MIME,
+# MD5, or EXIF, and no row. Net effect: a smaller DB and a faster crawl.
+#
+# Unlike the exclude defaults (which are locked for safety -- see EXCLUDE_DEFAULTS),
+# every INCLUDE default is freely removable from the UI: omitting a type can't
+# corrupt anything, it just means "don't index that type". The config stores the
+# two small deltas from the defaults, so a future release growing INCLUDE_DEFAULTS
+# is picked up automatically instead of freezing the user to today's set.
+INCLUDE_DEFAULTS = frozenset({
+    # documents
+    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+    ".pages", ".numbers", ".key",          # Apple iWork (Keynote is ".key")
+    ".txt", ".rtf", ".md", ".csv",
+    # graphics
+    ".psd", ".ai", ".jpg", ".jpeg", ".png", ".tif", ".tiff",
+    ".heic", ".gif", ".webp", ".svg",
+    # audio / video
+    ".mp3", ".m4a", ".wav", ".aiff", ".flac",
+    ".mp4", ".mov", ".m4v", ".avi", ".mkv",
+    # archives / disk images
+    ".zip", ".dmg",
+})
+
+# Lives next to the DATABASE, same persistent location and legacy fallback as the
+# exclude list (see EXCLUDE_CONFIG for why-not-next-to-the-script).
+INCLUDE_CONFIG = DB_PATH.parent / "include_config.json"
+_LEGACY_INCLUDE_CONFIG = Path(__file__).resolve().parent / "include_config.json"
+
+
+def normalize_extension(entry):
+    """Normalize a user-typed extension to the stored '.xyz' lowercase form, or
+    None if it isn't a usable single-suffix extension. Accepts 'pdf', '.PDF',
+    ' .pdf '; rejects empties, compound suffixes ('.tar.gz'), and anything with
+    a slash/space/glob char."""
+    if not isinstance(entry, str):
+        return None
+    s = entry.strip().lower()
+    if not s:
+        return None
+    if not s.startswith("."):
+        s = "." + s
+    body = s[1:]
+    if not body or not body.isalnum():   # one segment, alphanumerics only
+        return None
+    return s
+
+
+def is_valid_extension(entry) -> bool:
+    return normalize_extension(entry) is not None
+
+
+def load_include_config() -> dict:
+    """Read the include config's two delta sets. Missing/garbage -> empty deltas.
+    Only the *contents* are read here; whether the filter is active is decided by
+    effective_includes() (which also accounts for the file's existence)."""
+    path = INCLUDE_CONFIG
+    if not path.exists() and _LEGACY_INCLUDE_CONFIG.exists():
+        path = _LEGACY_INCLUDE_CONFIG
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except (FileNotFoundError, ValueError, OSError):
+        return {"disabled": set(), "added": set()}
+    if not isinstance(data, dict):
+        return {"disabled": set(), "added": set()}
+
+    def _clean(key):
+        vals = data.get(key, [])
+        if not isinstance(vals, list):
+            return set()
+        return {e for e in (normalize_extension(v) for v in vals) if e}
+
+    return {"disabled": _clean("disabled"), "added": _clean("added")}
+
+
+def effective_includes():
+    """The active include set as a frozenset, or None when the filter is OFF
+    (index every type). OFF when no config file exists -- so the default, back-
+    compatible behavior is "index everything" until the user saves an include
+    list -- or when the effective set is empty (the safe failure mode: never
+    silently index zero files)."""
+    if not INCLUDE_CONFIG.exists() and not _LEGACY_INCLUDE_CONFIG.exists():
+        return None
+    cfg = load_include_config()
+    eff = (set(INCLUDE_DEFAULTS) - cfg["disabled"]) | cfg["added"]
+    return frozenset(eff) if eff else None
+
+
+# Active include filter, computed once at import (the crawl subprocess re-reads
+# it on its own startup; query_app.py reads the deltas fresh per request).
+INCLUDE_EXTENSIONS = effective_includes()
+
+
 # How many files to batch-insert before committing to DB
 COMMIT_BATCH_SIZE = 100
 
@@ -522,6 +618,13 @@ def crawl(do_hash: bool = True, hash_only: bool = False, dupes_only: bool = Fals
         skip_dirs.add(str(app_bundle))
         print(f"  Skipping app bundle: {app_bundle}\n")
 
+    # Report the include-by-type filter (None => index every type).
+    if INCLUDE_EXTENSIONS is not None:
+        print(f"  Indexing only {len(INCLUDE_EXTENSIONS)} file types: "
+              f"{' '.join(sorted(INCLUDE_EXTENSIONS))}\n")
+    else:
+        print("  Indexing all file types (include filter off)\n")
+
     # -------------------------------------------------------------------------
     # HASH-ONLY MODE
     # -------------------------------------------------------------------------
@@ -728,6 +831,12 @@ def crawl(do_hash: bool = True, hash_only: bool = False, dupes_only: bool = Fals
                     pbar.set_description_str(f"Indexing [{dir_volume}]")
 
                 for filename in filenames:
+                    # Include filter (if active): decided on the extension alone,
+                    # before stat/resume/content -- a non-included type costs
+                    # nothing and never gets a row. None => filter off (index all).
+                    if (INCLUDE_EXTENSIONS is not None
+                            and os.path.splitext(filename)[1].lower() not in INCLUDE_EXTENSIONS):
+                        continue
                     file_path = dir_path / filename
                     pbar.update(1)
 
@@ -1043,6 +1152,50 @@ def prune_excluded():
     print(f"{'='*60}\n")
 
 
+def prune_not_included():
+    """Remove DB rows whose extension is not in the active include set.
+
+    The retroactive counterpart to the crawl-time include filter (like
+    --prune-excluded is to the exclude list): after narrowing the include list,
+    this deletes rows for now-excluded types. No-ops when the filter is off
+    (INCLUDE_EXTENSIONS is None -- everything is "included"). Pure SQL, no disk
+    access and no mount guard, so it is safe with volumes offline.
+    """
+    print(f"\n{'='*60}")
+    print("  Prune-not-included mode — removing rows whose type is excluded")
+    print(f"  Database: {DB_PATH}")
+    print(f"{'='*60}\n")
+
+    if INCLUDE_EXTENSIONS is None:
+        print("  Include filter is off — every type is indexed, nothing to prune.\n")
+        return
+
+    con = duckdb.connect(str(DB_PATH))
+    before = con.execute("SELECT count(*) FROM files").fetchone()[0]
+    print(f"  {before:,} rows in index")
+    print(f"  Keeping {len(INCLUDE_EXTENSIONS)} types: "
+          f"{' '.join(sorted(INCLUDE_EXTENSIONS))}\n")
+
+    exts = sorted(INCLUDE_EXTENSIONS)
+    placeholders = ", ".join("?" for _ in exts)
+    con.execute(
+        f"DELETE FROM files WHERE coalesce(lower(extension), '') NOT IN ({placeholders})",
+        exts,
+    )
+    con.commit()
+    after = con.execute("SELECT count(*) FROM files").fetchone()[0]
+    con.close()
+
+    print(f"\n{'='*60}")
+    print("  Prune-not-included complete")
+    print(f"  Before:   {before:,}")
+    print(f"  Deleted:  {before - after:,}")
+    print(f"  After:    {after:,}")
+    print("  Compact the DB to reclaim the freed space.")
+    print(f"  Database: {DB_PATH}")
+    print(f"{'='*60}\n")
+
+
 # =============================================================================
 # REINDEX-CHANGED MODE
 # =============================================================================
@@ -1201,6 +1354,7 @@ if __name__ == "__main__":
     parser.add_argument("--include-dataless", action="store_true", help="With --hash-only/--hash-dupes, also hash dataless iCloud files (downloads them); off by default")
     parser.add_argument("--prune",     action="store_true", help="Remove DB rows for files that no longer exist on disk (skips offline volumes)")
     parser.add_argument("--prune-excluded", action="store_true", help="Remove DB rows now covered by the exclude list (retroactive exclude; compact after)")
+    parser.add_argument("--prune-not-included", action="store_true", help="Remove DB rows whose type is not in the include list (retroactive include; compact after)")
     parser.add_argument("--reindex-changed", action="store_true", help="Refresh rows whose on-disk file changed (size/mtime); skips offline volumes")
     parser.add_argument("--roots", nargs="+", metavar="PATH", help="Restrict the crawl to these root paths (selective per-volume scan, e.g. / or /Volumes/NAME); default is all of CRAWL_ROOTS")
     parser.add_argument("--db", help="Operate on this DB file instead of the default (used by the web UI to run against a disposable copy)")
@@ -1213,6 +1367,8 @@ if __name__ == "__main__":
         prune()
     elif args.prune_excluded:
         prune_excluded()
+    elif args.prune_not_included:
+        prune_not_included()
     elif args.reindex_changed:
         reindex_changed(do_hash=not args.no_hash)
     elif args.hash_dupes:
