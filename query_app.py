@@ -103,6 +103,40 @@ def save_user_excludes(paths) -> dict:
     return {"defaults": sorted(crawler.EXCLUDE_DEFAULTS), "user": clean}
 
 
+def get_includes() -> dict:
+    """Include-by-type filter state, for the editor UI: the baked-in default
+    types, the user's two deltas (which defaults are off, what extra types were
+    added), and whether the filter is currently active."""
+    cfg = crawler.load_include_config()
+    return {
+        "defaults": sorted(crawler.INCLUDE_DEFAULTS),
+        "disabled": sorted(cfg["disabled"]),
+        "added": sorted(cfg["added"]),
+        "enabled": crawler.effective_includes() is not None,
+    }
+
+
+def save_user_includes(disabled, added) -> dict:
+    """Write the include config (two delta sets) to crawler.INCLUDE_CONFIG. Each
+    entry is normalized to '.xyz' and only valid extensions are kept. Like the
+    exclude writer this is a constrained JSON write — it does not feed the fixed
+    crawler COMMANDS. Returns the refreshed get_includes() view (or an error)."""
+    if not isinstance(disabled, list) or not isinstance(added, list):
+        return {"error": "expected lists for disabled and added"}
+    clean_dis = sorted({e for e in (crawler.normalize_extension(x) for x in disabled) if e})
+    clean_add = sorted({e for e in (crawler.normalize_extension(x) for x in added) if e})
+    # An "added" type that is already a default is redundant; drop it so the file
+    # stays the minimal delta from the defaults.
+    clean_add = [e for e in clean_add if e not in crawler.INCLUDE_DEFAULTS]
+    try:
+        crawler.INCLUDE_CONFIG.parent.mkdir(parents=True, exist_ok=True)
+        with open(crawler.INCLUDE_CONFIG, "w") as f:
+            json.dump({"disabled": clean_dis, "added": clean_add}, f, indent=2)
+    except OSError as e:
+        return {"error": f"could not save: {e}"}
+    return get_includes()
+
+
 # Run subprocesses with THIS server's own interpreter (the project venv python,
 # which already has every dependency) rather than "uv run". The server may be
 # started by launchd, whose minimal PATH does not include uv — a bare "uv run"
@@ -137,6 +171,7 @@ COMMANDS = {
     "scan":    _cmd(),
     "prune":   _cmd("--prune"),
     "prune_excluded": _cmd("--prune-excluded"),
+    "prune_not_included": _cmd("--prune-not-included"),
     "sync":    " && ".join([_cmd("--reindex-changed"), _cmd(), _cmd("--prune")]),
     "compact": (PY + " compact_db.py "
                 + shlex.quote(DB_PATH) + " " + shlex.quote(WORK_DB)),
@@ -1268,6 +1303,50 @@ PAGE = """<!doctype html>
   #ex-save:hover { border-color: rgba(var(--green-rgb), .75); }
   #ex-msg { color: var(--muted); font-size: 13px; }
 
+  /* ---- Include-by-type modal (mirrors the exclude modal) ---- */
+  #inmodal {
+    position: fixed; inset: 0; z-index: 50;
+    background: rgba(10,9,12,.55); backdrop-filter: blur(7px);
+    display: flex; align-items: center; justify-content: center;
+  }
+  #inmodal[hidden] { display: none; }
+  #inmodal-panel {
+    position: relative;
+    background: var(--modal-bg); color: var(--text);
+    border: 1px solid var(--line); border-radius: 12px;
+    padding: 20px; width: 580px; max-width: 92vw;
+    max-height: 86vh; overflow: auto;
+    box-shadow: 0 30px 80px rgba(0,0,0,.5);
+  }
+  #inmodal-panel h3 { margin: 0 0 6px; font-size: 15px; }
+  #inmodal .ex-note { color: var(--muted); font-size: 13px; margin: 0 0 10px; }
+  #in-status { font-size: 13px; margin: 0 0 10px; color: var(--muted); }
+  #in-status b { color: var(--text); }
+  #in-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+    gap: 2px 12px; margin: 4px 0 12px;
+    border: 1px solid var(--line-soft); border-radius: 7px;
+    padding: 8px 10px; max-height: 34vh; overflow: auto; background: var(--field);
+  }
+  #in-grid label {
+    display: flex; align-items: center; gap: 6px; font: 12px/1.8 var(--mono);
+    color: var(--strip-text); cursor: pointer;
+  }
+  #in-added { width: 100%; height: 90px; box-sizing: border-box; }
+  #inmodal .ex-btns { margin-top: 12px; display: flex; gap: 8px; align-items: center; }
+  #inmodal .ex-btns button {
+    padding: 7px 16px; border-radius: 7px; cursor: pointer;
+    border: 1px solid var(--line); background: var(--modal-btn);
+    transition: border-color .12s ease, background .12s ease;
+  }
+  #inmodal .ex-btns button:hover { border-color: var(--rule); }
+  #in-save {
+    border-color: rgba(var(--green-rgb), .5); color: var(--save-text); font-weight: 600;
+    background: linear-gradient(180deg, rgba(var(--green-rgb), .2), rgba(var(--green-rgb), .08));
+  }
+  #in-save:hover { border-color: rgba(var(--green-rgb), .75); }
+  #in-msg { color: var(--muted); font-size: 13px; }
+
   /* ---- Add Files volume picker modal ---- */
   #vpmodal {
     position: fixed; inset: 0; z-index: 50;
@@ -1500,6 +1579,7 @@ PAGE = """<!doctype html>
       <button data-mode="reindex">Reindex changed</button>
       <button data-mode="prune">Prune deleted</button>
       <button data-mode="prune_excluded">Prune excluded</button>
+      <button data-mode="prune_not_included">Prune not-included</button>
       <button data-mode="sync">Full sync (all 3)</button>
       <button data-mode="compact">Compact DB</button>
     </details>
@@ -1508,6 +1588,7 @@ PAGE = """<!doctype html>
   <div id="tools">
     <button id="dupes-open">Duplicate manager</button>
     <button id="edit-excludes">Edit exclude list</button>
+    <button id="edit-includes">Edit include list</button>
     <button id="clearlog">Clear output</button>
   </div>
   <div id="side-foot">
@@ -1588,6 +1669,30 @@ PAGE = """<!doctype html>
       <button id="ex-save">Save</button>
       <button id="ex-cancel">Cancel</button>
       <span id="ex-msg"></span>
+    </div>
+  </div>
+</div>
+<div id="inmodal" hidden>
+  <div id="inmodal-panel">
+    <button type="button" class="modal-x" id="in-x" title="Close" aria-label="Close">&#10005;</button>
+    <h3>Index only these file types</h3>
+    <p class="ex-note">When any type is selected, the crawler indexes <b>only</b>
+      those extensions &mdash; everything else costs nothing and gets no row, for
+      a smaller, faster index. Uncheck a built-in type to skip it, or add your own
+      below. <b>Leave everything unchecked and empty to index all file types</b>
+      (the filter is then off). Changes take effect on the <b>next</b> crawl; to
+      apply to what's already indexed, run <b>Prune not-included</b> then
+      <b>Compact DB</b>.</p>
+    <div id="in-status"></div>
+    <div><b>Built-in types</b> &mdash; checked types are indexed:</div>
+    <div id="in-grid"></div>
+    <div><b>Your extra types</b> &mdash; one per line (e.g. <code>sketch</code>, <code>.raf</code>):</div>
+    <textarea id="in-added" spellcheck="false"
+      placeholder="sketch&#10;raf"></textarea>
+    <div class="ex-btns">
+      <button id="in-save">Save</button>
+      <button id="in-cancel">Cancel</button>
+      <span id="in-msg"></span>
     </div>
   </div>
 </div>
@@ -1952,6 +2057,7 @@ document.addEventListener('keydown', e => {
   if (e.key !== 'Escape') return;
   hideCtx();
   exModal.hidden = true;     // every dialog closes on Escape, not just Cancel
+  inModal.hidden = true;
   dupModal.hidden = true;
   vpModal.hidden = true;
 });
@@ -1989,6 +2095,7 @@ const clearBtn = document.getElementById('clearlog');
 const LABELS = {reindex:'Reindex changed', scan:'Scan for new',
                 add:'Add Files',
                 prune:'Prune deleted', prune_excluded:'Prune excluded',
+                prune_not_included:'Prune not-included',
                 sync:'Full sync', compact:'Compact DB'};
 const DIRECT_MODES = ['add'];   // write straight to the DB; halting keeps progress
 const isDirect = m => DIRECT_MODES.includes(m);
@@ -2561,6 +2668,65 @@ document.getElementById('ex-save').onclick = async () => {
   exMsg.textContent = 'Saved \\u2014 applies on the next crawl.';
 };
 
+// ---- Edit include list (index only these file types; writes include_config.json) ----
+const inModal = document.getElementById('inmodal');
+const inGrid = document.getElementById('in-grid');
+const inAdded = document.getElementById('in-added');
+const inMsg = document.getElementById('in-msg');
+const inStatus = document.getElementById('in-status');
+function inAddedLines() {
+  return inAdded.value.split('\\n').map(s => s.trim()).filter(Boolean);
+}
+function inUpdateStatus() {
+  const checked = [...inGrid.querySelectorAll('input')].filter(c => c.checked).length;
+  const n = checked + inAddedLines().length;
+  inStatus.innerHTML = n
+    ? 'Filter is <b>ON</b> \\u2014 indexing only <b>' + n + '</b> file '
+      + (n === 1 ? 'type' : 'types') + '.'
+    : 'Filter is <b>OFF</b> \\u2014 indexing <b>all</b> file types.';
+}
+document.getElementById('edit-includes').onclick = async () => {
+  inMsg.textContent = '';
+  let d;
+  try { d = await (await fetch('/api/includes')).json(); }
+  catch (e) { alert('Could not load include list: ' + e); return; }
+  const disabled = new Set(d.disabled || []);
+  inGrid.textContent = '';
+  for (const ext of (d.defaults || [])) {
+    const lbl = document.createElement('label');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.value = ext;
+    cb.checked = !disabled.has(ext);
+    cb.onchange = inUpdateStatus;
+    lbl.append(cb, document.createTextNode(ext));
+    inGrid.append(lbl);
+  }
+  inAdded.value = (d.added || []).join('\\n');
+  inUpdateStatus();
+  inModal.hidden = false;
+};
+inAdded.oninput = inUpdateStatus;
+document.getElementById('in-cancel').onclick = () => { inModal.hidden = true; };
+document.getElementById('in-x').onclick = () => { inModal.hidden = true; };
+document.getElementById('in-save').onclick = async () => {
+  // Built-in types left unchecked become the "disabled" delta; the textarea is
+  // the "added" delta. The server normalizes/validates extensions either way.
+  const disabled = [...inGrid.querySelectorAll('input')]
+    .filter(c => !c.checked).map(c => c.value);
+  inMsg.textContent = 'Saving\\u2026';
+  const d = await (await fetch('/api/includes', {method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({disabled, added: inAddedLines()})})).json();
+  if (d.error) { inMsg.textContent = ''; alert(d.error); return; }
+  // Reflect what the server actually stored (normalized/deduped).
+  const dis = new Set(d.disabled || []);
+  for (const cb of inGrid.querySelectorAll('input')) cb.checked = !dis.has(cb.value);
+  inAdded.value = (d.added || []).join('\\n');
+  inUpdateStatus();
+  inMsg.textContent = 'Saved \\u2014 applies on the next crawl.';
+};
+
 // ---- Add Files: volume picker (pick which mounted volumes to scan) ----
 const vpModal = document.getElementById('vpmodal');
 const vpList = document.getElementById('vp-list');
@@ -2682,6 +2848,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps(list_volumes()))
         elif self.path == "/api/excludes":
             self._send(200, json.dumps(get_excludes()))
+        elif self.path == "/api/includes":
+            self._send(200, json.dumps(get_includes()))
         else:
             self._send(404, json.dumps({"error": "not found"}))
 
@@ -2713,6 +2881,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps(halt_run()))
         elif self.path == "/api/excludes":
             self._send(200, json.dumps(save_user_excludes(payload.get("user", []))))
+        elif self.path == "/api/includes":
+            self._send(200, json.dumps(save_user_includes(
+                payload.get("disabled", []), payload.get("added", []))))
         else:
             self._send(404, json.dumps({"error": "not found"}))
 
