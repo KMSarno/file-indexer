@@ -1476,6 +1476,12 @@ PAGE = """<!doctype html>
     color: var(--strip-text); cursor: pointer;
   }
   #in-added { width: 100%; height: 90px; box-sizing: border-box; }
+  #in-bulk { display: flex; gap: 8px; margin: 4px 0 6px; }
+  #in-bulk button {
+    padding: 3px 10px; border-radius: 6px; cursor: pointer; font-size: 12px;
+    border: 1px solid var(--line); background: var(--modal-btn);
+  }
+  #in-bulk button:hover { border-color: var(--rule); }
   #inmodal .ex-btns { margin-top: 12px; display: flex; gap: 8px; align-items: center; }
   #inmodal .ex-btns button {
     padding: 7px 16px; border-radius: 7px; cursor: pointer;
@@ -1833,6 +1839,10 @@ PAGE = """<!doctype html>
       re-tag rows already indexed, run <b>Re-tag types</b>.</p>
     <div id="in-status"></div>
     <div><b>Built-in types</b> &mdash; checked types are listed:</div>
+    <div id="in-bulk">
+      <button type="button" id="in-check-all">Check all</button>
+      <button type="button" id="in-uncheck-all">Uncheck all</button>
+    </div>
     <div id="in-grid"></div>
     <div><b>Your extra types</b> &mdash; one per line (e.g. <code>sketch</code>, <code>.raf</code>):</div>
     <textarea id="in-added" spellcheck="false"
@@ -2898,6 +2908,14 @@ document.getElementById('edit-includes').onclick = async () => {
   inModal.hidden = false;
 };
 inAdded.oninput = inUpdateStatus;
+document.getElementById('in-check-all').onclick = () => {
+  for (const cb of inGrid.querySelectorAll('input')) cb.checked = true;
+  inUpdateStatus();
+};
+document.getElementById('in-uncheck-all').onclick = () => {
+  for (const cb of inGrid.querySelectorAll('input')) cb.checked = false;
+  inUpdateStatus();
+};
 document.getElementById('in-cancel').onclick = () => { inModal.hidden = true; };
 document.getElementById('in-x').onclick = () => { inModal.hidden = true; };
 document.getElementById('in-save').onclick = async () => {
