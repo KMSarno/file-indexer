@@ -1832,10 +1832,10 @@ PAGE = """<!doctype html>
     <p class="ex-note">The crawler indexes <b>every</b> file regardless &mdash;
       this list only flags the types you care about as <b>listed</b>. The
       <b>Listed types only</b> switch (top bar) then hides everything else from
-      query results; unlisted files stay in the index, just out of view. Uncheck a
-      built-in type to drop it from the list, or add your own below. <b>Leave
-      everything unchecked and empty to treat all types as listed</b> (the switch
-      is then a no-op). Changes apply to <b>new</b> files on the next crawl; to
+      query results; unlisted files stay in the index, just out of view. <b>Check
+      the types you want flagged as listed</b> (or add your own below); uncheck to
+      drop one. The list starts empty &mdash; <b>leave everything unchecked to
+      treat all types as listed</b> (the switch is then a no-op). Changes apply to <b>new</b> files on the next crawl; to
       re-tag rows already indexed, run <b>Re-tag types</b>.</p>
     <div id="in-status"></div>
     <div><b>Built-in types</b> &mdash; checked types are listed:</div>
@@ -2898,7 +2898,11 @@ document.getElementById('edit-includes').onclick = async () => {
     const cb = document.createElement('input');
     cb.type = 'checkbox';
     cb.value = ext;
-    cb.checked = !disabled.has(ext);
+    // Only show a box checked when a filter is actually active (d.enabled). With
+    // no sidecar yet the filter is OFF, so every box starts UNCHECKED — the
+    // editor must not imply a list exists that the engine isn't enforcing. The
+    // user opts in by checking the types they want, then Save.
+    cb.checked = d.enabled && !disabled.has(ext);
     cb.onchange = inUpdateStatus;
     lbl.append(cb, document.createTextNode(ext));
     inGrid.append(lbl);
@@ -2930,7 +2934,7 @@ document.getElementById('in-save').onclick = async () => {
   if (d.error) { inMsg.textContent = ''; alert(d.error); return; }
   // Reflect what the server actually stored (normalized/deduped).
   const dis = new Set(d.disabled || []);
-  for (const cb of inGrid.querySelectorAll('input')) cb.checked = !dis.has(cb.value);
+  for (const cb of inGrid.querySelectorAll('input')) cb.checked = d.enabled && !dis.has(cb.value);
   inAdded.value = (d.added || []).join('\\n');
   inUpdateStatus();
   inMsg.textContent = 'Saved \\u2014 applies on the next crawl.';
