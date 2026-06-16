@@ -753,6 +753,13 @@ def get_stats() -> dict:
          "mounted": bool(v) and os.path.ismount("/" if v == "/" else "/Volumes/" + v)}
         for v, c in vols
     ]
+    # Whether the "Listed types only" filter is actually active (a sidecar exists
+    # and resolves to a non-empty set). The UI hides the toggle entirely when this
+    # is false — an inert toggle shouldn't occupy the Locate bar. Read fresh.
+    try:
+        out["listed_enabled"] = crawler.effective_includes() is not None
+    except Exception:
+        out["listed_enabled"] = False
     return out
 
 
@@ -2229,6 +2236,24 @@ for (const el of [locName, locExt, locFrom, locTo, locVol])
 const locListed = document.getElementById('loc-listed');
 const locListedWrap = document.getElementById('loc-listed-wrap');
 function applyListed() { locListedWrap.classList.toggle('on', locListed.checked); }
+// The toggle is only meaningful when an include list is actually active. When it
+// isn't (no sidecar, or edited down to zero types), it would do nothing, so we
+// hide it entirely — that corner of the Locate bar then looks like the builds
+// before the feature existed. Visibility is refreshed from /api/stats (startup,
+// after a run, after a DB switch) and from the include editor's save response.
+// Start hidden so it never flashes in before we know the state.
+let listedEnabled = false;
+locListedWrap.style.display = 'none';
+function applyListedVisibility(enabled) {
+  listedEnabled = !!enabled;
+  locListedWrap.style.display = listedEnabled ? '' : 'none';
+  if (listedEnabled) {
+    locListed.checked = localStorage.getItem('kendexListedOnly') === '1';
+  } else if (locListed.checked) {
+    locListed.checked = false;   // hidden ⇒ must never silently filter
+  }
+  applyListed();
+}
 locListed.checked = localStorage.getItem('kendexListedOnly') === '1';
 applyListed();
 locListed.addEventListener('change', () => {
@@ -2622,6 +2647,7 @@ async function loadStats(){
   let s;
   try { s = await (await fetch('/api/stats')).json(); } catch (e) { return; }
   document.body.classList.toggle('nodb', !!s.no_db);
+  applyListedVisibility(!!s.listed_enabled);  // hide the toggle when the filter is inert
   offlineVols = new Set((s.volumes || []).filter(v => !v.mounted).map(v => v.name));
   volListEl.innerHTML = '';
   for (const v of (s.volumes || [])) {
@@ -2937,7 +2963,10 @@ document.getElementById('in-save').onclick = async () => {
   for (const cb of inGrid.querySelectorAll('input')) cb.checked = d.enabled && !dis.has(cb.value);
   inAdded.value = (d.added || []).join('\\n');
   inUpdateStatus();
-  inMsg.textContent = 'Saved \\u2014 applies on the next crawl.';
+  applyListedVisibility(d.enabled);   // show/hide the Locate toggle to match
+  inMsg.innerHTML = d.enabled
+    ? 'Saved. New files tag on the next crawl \\u2014 run <b>Re-tag types</b> to update already-indexed rows now.'
+    : 'Saved \\u2014 list is off; all file types count as listed.';
 };
 
 // ---- Database folder: point the server at a different files.db (sticky) ----
