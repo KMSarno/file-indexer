@@ -484,12 +484,18 @@ function setupAutoUpdate() {
     installMenu();              // enable "Restart & Update Now" for an immediate apply
   });
 
+  // No update: only a manual "Check for Updates…" gets a modal (a background
+  // daily check stays silent). Pairs with the update-available modal so a manual
+  // check always ends in a Dismiss box either way.
   autoUpdater.on('update-not-available', () => {
     if (!manualCheck) return;
     manualCheck = false;
     dialog.showMessageBox(mainWindow, {
-      type: 'info', message: 'You’re up to date',
-      detail: `Kendex ${app.getVersion()} is the latest version.`,
+      type: 'info',
+      message: 'No update found',
+      detail: `You are running the current version (Kendex ${app.getVersion()}).`,
+      buttons: ['Dismiss'],
+      defaultId: 0,
     });
   });
 
