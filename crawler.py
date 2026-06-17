@@ -616,7 +616,7 @@ def crawl(do_hash: bool = True, hash_only: bool = False, dupes_only: bool = Fals
     # crawler.py then lives at .../Kendex.app/Contents/Resources/backend/crawler.py,
     # and the bundled runtime ships a libmagic magic.mgc that floods the log if
     # indexed -- and an app should never index its own guts. Detect the nearest
-    # ancestor whose name ends in '.app'; absent (dev / LaunchAgent run), nothing
+    # ancestor whose name ends in '.app'; absent (dev / from-source run), nothing
     # extra is excluded.
     app_bundle = next((p for p in Path(__file__).resolve().parents
                        if p.name.endswith(".app")), None)

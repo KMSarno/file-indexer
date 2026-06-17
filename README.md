@@ -27,8 +27,8 @@ current index.
 
 The Electron app (`Kendex.app`) starts the Python backend on a free localhost
 port and opens it in a native window. It keeps its own database under
-`~/Library/Application Support/kendex/files.db`, so it never interferes with a
-browser-mode service or another crawl.
+`~/Library/Application Support/kendex/files.db` by default (switchable from the
+**File** menu), so it never interferes with another crawl.
 
 ### Requirements
 
@@ -36,7 +36,7 @@ browser-mode service or another crawl.
 libmagic — so it runs on a clean macOS (Apple Silicon) with **nothing to
 install**. Download it, drag it to Applications, and open it.
 
-The tools below are needed only for **running from source** or **browser mode**:
+The tools below are needed only for **running from source**:
 
 - **macOS** (Apple Silicon for the prebuilt artifacts)
 - **[uv](https://docs.astral.sh/uv/)** — manages Python and dependencies:
@@ -152,17 +152,10 @@ FILE_INDEXER_DB="$HOME/FileIndexer/files.db" npm start
 - **Dark and light themes** — follows the system by default; the toggle in the
   sidebar footer remembers your choice.
 
-## Browser mode (headless service)
+## Command line
 
-The same backend can run as a LaunchAgent serving <http://127.0.0.1:8800>:
-
-```bash
-./install.sh
-```
-
-The installer asks for an install directory and database path, installs
-dependencies, and registers the LaunchAgent. The crawler can also be driven
-directly from a shell (`FILE_INDEXER_DB` selects the database):
+The crawler can be driven directly from a shell (`FILE_INDEXER_DB` selects the
+database):
 
 ```bash
 uv run crawler.py                      # add new files (resumes; skips indexed)
@@ -184,12 +177,4 @@ already-indexed rows under them, then **Compact DB** to reclaim the space.
 
 ## Uninstall
 
-Desktop app: delete `Kendex.app` and `~/Library/Application Support/kendex/`.
-
-Browser mode:
-
-```bash
-launchctl bootout gui/$(id -u)/com.fileindexer.queryapp
-rm ~/Library/LaunchAgents/com.fileindexer.queryapp.plist
-rm -rf <install-dir>        # also removes the database if it lives there
-```
+Delete `Kendex.app` and `~/Library/Application Support/kendex/`.
