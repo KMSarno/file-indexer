@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, Notification, dialog, powerSaveBlocker, shell } = require('electron');
+const { app, BrowserWindow, Menu, dialog, powerSaveBlocker, shell } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const { spawn } = require('child_process');
 const fs = require('fs');
@@ -451,22 +451,37 @@ async function chooseDbLocation() {
 // the user apply it immediately when they're ready.
 let updateReady = false;       // a downloaded update is staged for install
 let manualCheck = false;       // the current check came from the menu
+let notifiedVersion = null;    // version we've already shown the "update found" modal for
 
 function setupAutoUpdate() {
   if (!app.isPackaged) return;  // no-op in `npm start` / dev
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
 
-  autoUpdater.on('update-downloaded', (info) => {
+  // Surface the update prominently as soon as it's detected — a modal box rather
+  // than the easy-to-miss system notification we showed before. autoInstall on
+  // quit is left on, so the update applies on the next launch; there's no
+  // relaunch button, just an acknowledgement. A manual "Check for Updates…"
+  // always shows it (so the menu click is never silent); a background daily
+  // check shows it once per new version.
+  autoUpdater.on('update-available', (info) => {
+    const wasManual = manualCheck;
+    manualCheck = false;
+    if (info.version === notifiedVersion && !wasManual) return;
+    notifiedVersion = info.version;
+    dialog.showMessageBox(mainWindow, {
+      type: 'info',
+      message: 'Update found',
+      detail: `Kendex ${info.version} will be installed automatically the next `
+        + 'time you start Kendex.',
+      buttons: ['Dismiss'],
+      defaultId: 0,
+    });
+  });
+
+  autoUpdater.on('update-downloaded', () => {
     updateReady = true;
-    installMenu();              // enable "Restart & Update Now"
-    try {
-      new Notification({
-        title: 'Kendex update ready',
-        body: `Version ${info.version} installs the next time you quit — `
-          + 'or choose Kendex → Restart & Update Now.',
-      }).show();
-    } catch { /* notifications may be denied; the menu item still works */ }
+    installMenu();              // enable "Restart & Update Now" for an immediate apply
   });
 
   autoUpdater.on('update-not-available', () => {
