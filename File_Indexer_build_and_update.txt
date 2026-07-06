@@ -1,0 +1,175 @@
+============================================================
+ File Indexer / Kendex — Build & Update Cheat Sheet  (arm64)
+============================================================
+
+KEY IDEA
+--------
+You do NOT build the Mac app on your own machine. Pushing a git tag that
+starts with "v" (e.g. v0.3.4) triggers a GitHub Actions workflow that
+builds, Developer-ID signs, and notarizes the Apple-Silicon (arm64) app on
+Apple's cloud runner, then publishes a LIVE GitHub Release with the .dmg
+automatically (it uploads to a draft, then un-drafts it once the build is
+signed/notarized/verified). Your job is just: bump the version, push the
+tag, wait, download. No manual publish step.
+
+Repo:   https://github.com/KMSarno/file-indexer
+Local:  /Volumes/TB5_DOCK8/KMSDB_PROJ/File_Indexer
+
+Everything below is run from the local repo folder:
+    cd /Volumes/TB5_DOCK8/KMSDB_PROJ/File_Indexer
+
+
+------------------------------------------------------------
+ A.  GET THE LATEST CODE ONTO THIS MACHINE  (no build)
+------------------------------------------------------------
+This just updates your local source checkout (the browser/LaunchAgent
+server runs from here).
+
+    git checkout main
+    git pull
+
+If the LaunchAgent browser server (port 8800) is running, restart it so it
+picks up the new code  -- but NOT while a scan is in progress:
+
+    launchctl kickstart -k gui/$(id -u)/com.kmsarno.fileindexer-queryapp
+
+  (That label is what's installed on THIS machine. If you ever reinstall
+   via the repo's install.sh the label becomes com.fileindexer.queryapp,
+   so confirm the live one with:
+       launchctl list | grep -i fileindexer
+   and use whatever label it prints.)
+
+
+------------------------------------------------------------
+ B.  CUT A NEW RELEASE BUILD  (the cloud does the building)
+------------------------------------------------------------
+1. Make sure main is current and clean:
+
+       git checkout main
+       git pull
+       git status          # should say "nothing to commit, clean"
+
+2. Pick the next version number. Check what's already out so you don't
+   reuse one:
+
+       git tag --sort=-creatordate | head
+       gh release list -L 5
+
+   Use the next number up (e.g. if v0.3.3 exists, go v0.3.4).
+
+3. Bump package.json to match (no git tag yet -- the workflow re-syncs it
+   too, but keeping the file in step is tidy):
+
+       npm version 0.3.4 --no-git-tag-version --allow-same-version
+       git add package.json package-lock.json
+       git commit -m "Bump version to 0.3.4"
+       git push
+
+4. Tag and push the tag. THE PUSHED TAG IS WHAT TRIGGERS THE BUILD:
+
+       git tag v0.3.4
+       git push origin v0.3.4
+
+5. Watch the build (takes ~5-8 min: build + sign + notarize):
+
+       gh run watch                       # live, picks the newest run
+   or  gh run list -L 3                    # just list recent runs
+   or open: https://github.com/KMSarno/file-indexer/actions
+
+6. When it finishes green, the release is already LIVE -- the workflow
+   un-drafts it automatically after signing/notarizing/verifying, and marks
+   it "Latest". Confirm:
+
+       gh release list -L 3                # shows "Latest" next to it
+
+   (During the build it briefly shows as a draft; that's normal -- it flips
+   live as the last step. The auto-publish was added so electron-updater can
+   find the release. NOTE: a v* tag now publishes on its own, so if it's a
+   shared release, coordinate the tag push with Son rather than relying on a
+   separate publish step.)
+
+
+------------------------------------------------------------
+ C.  PUBLISH MANUALLY  (fallback only -- normally automatic)
+------------------------------------------------------------
+You normally do NOT need this -- step B publishes the release for you. Use
+it only to recover a release that got stuck as a draft (e.g. the build
+failed AFTER upload but BEFORE the un-draft step):
+
+    gh release edit v0.3.4 --draft=false --latest
+
+
+------------------------------------------------------------
+ D.  DOWNLOAD & INSTALL THE BUILT APP ON A MAC  (arm64)
+------------------------------------------------------------
+Pull the signed .dmg from the release (works on draft releases too, as long
+as you're authenticated with gh):
+
+    cd ~/Downloads
+    gh release download v0.3.4 --pattern '*arm64.dmg'
+
+Then install:
+    1. Double-click the downloaded  Kendex-0.3.4-arm64.dmg
+    2. Drag Kendex.app into /Applications
+    3. EJECT the mounted DMG when done  (so it doesn't show up as a
+       volume in the indexer's volume picker)
+    4. First launch: it's notarized, so it opens normally -- no
+       right-click-Open dance needed.
+
+To point the app at an existing database, use the app's
+    File menu -> "Choose Database Location..."
+and select the folder that contains files.db
+(e.g. /Volumes/TB5_DOCK8/KMSDB_PROJ).
+
+
+------------------------------------------------------------
+ E.  INCLUDE LIST  (listed-type filter -- v0.5.0+)
+------------------------------------------------------------
+A type-level filter that complements the pathname exclude list. It is
+NON-DESTRUCTIVE: every file is still indexed and hashed -- nothing is
+dropped or deleted. Each row just gets tagged is_listed_type = true when
+its extension is on the include list. The "Listed types only" switch in
+the Locate bar then hides everything else from results (the files stay in
+the index, just out of view).
+
+Manage it in the app:  Tools -> "Edit include list"
+    - A checkbox grid of ~35 built-in types (pdf, docx, jpg, mp3, mp4,
+      Apple iWork .pages/.numbers/.key, etc.). UNCHECK any you don't want
+      flagged; add your own extensions in the textarea. Check all /
+      Uncheck all buttons included.
+    - Unlike the exclude list, every built-in type is removable -- omitting
+      a type can't corrupt anything.
+    - Saved to  include_config.json  next to files.db (stores just your
+      changes from the defaults, so future default additions carry over).
+    - Leave it untouched / empty and the filter is OFF: every type counts
+      as listed and the switch is hidden. It's opt-in.
+
+KEY GOTCHA -- editing the list only tags NEW files on the next crawl. To
+apply an edit to the files ALREADY in the index, run the Maintenance
+button:
+
+    "Re-tag types"     (crawler.py --reflag-types)
+
+It recomputes the is_listed_type flag on every existing row from the
+current list. Non-destructive -- it only updates a flag, deletes nothing.
+So the full workflow after an edit is:  Edit include list -> Re-tag types.
+
+
+------------------------------------------------------------
+ GOTCHAS
+------------------------------------------------------------
+* ONE server per database while scanning. The write operations (Add Files,
+  maintenance buttons) need an exclusive lock on files.db. Do NOT run the
+  Electron Kendex.app and the LaunchAgent browser server (port 8800)
+  against the SAME files.db at the same time -- two live servers will cause
+  a "Conflicting lock is held" error when you try to scan. Pick one.
+
+* Tag format matters: the workflow only fires on tags that start with "v"
+  (v0.3.4). A tag like "0.3.4" or "release-4" will NOT build.
+
+* Manual workflow runs (Actions -> "Run workflow" button) build + sign but
+  do NOT publish a release -- they just upload the artifacts to that run.
+  Only a pushed "v*" TAG produces a real, auto-published Release.
+
+* If "gh" asks you to log in:  gh auth login
+============================================================
