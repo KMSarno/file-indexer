@@ -159,10 +159,10 @@ So the full workflow after an edit is:  Edit include list -> Re-tag types.
  GOTCHAS
 ------------------------------------------------------------
 * ONE server per database while scanning. The write operations (Add Files,
-  maintenance buttons) need an exclusive lock on files.db. Do NOT run the
-  Electron Kendex.app and the LaunchAgent browser server (port 8800)
-  against the SAME files.db at the same time -- two live servers will cause
-  a "Conflicting lock is held" error when you try to scan. Pick one.
+  maintenance buttons) need an exclusive lock on files.db. Do NOT point two
+  servers at the SAME files.db at once -- e.g. the Electron Kendex.app AND a
+  query_app.py you ran by hand from source. Two live servers cause a
+  "Conflicting lock is held" error when you try to scan. Pick one.
 
 * Tag format matters: the workflow only fires on tags that start with "v"
   (v0.3.4). A tag like "0.3.4" or "release-4" will NOT build.
