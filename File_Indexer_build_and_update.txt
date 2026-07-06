@@ -20,24 +20,24 @@ Everything below is run from the local repo folder:
 
 
 ------------------------------------------------------------
- A.  GET THE LATEST CODE ONTO THIS MACHINE  (no build)
+ A.  GET THE LATEST SOURCE ONTO THIS MACHINE  (no build)
 ------------------------------------------------------------
-This just updates your local source checkout (the browser/LaunchAgent
-server runs from here).
+This updates your local source checkout ONLY. Use it for running the
+crawler or query_app.py from the command line, or for development:
 
     git checkout main
     git pull
 
-If the LaunchAgent browser server (port 8800) is running, restart it so it
-picks up the new code  -- but NOT while a scan is in progress:
+It does NOT update the installed Kendex.app. The desktop app is a built,
+signed binary that updates ITSELF via auto-update (or you install a new
+release build -- sections B & D). A "git pull" here never touches it.
 
-    launchctl kickstart -k gui/$(id -u)/com.kmsarno.fileindexer-queryapp
+The old LaunchAgent browser server (port 8800) is gone -- the Electron
+Kendex.app is the only front-end now, so there's nothing to restart after
+a pull. To launch the app:
 
-  (That label is what's installed on THIS machine. If you ever reinstall
-   via the repo's install.sh the label becomes com.fileindexer.queryapp,
-   so confirm the live one with:
-       launchctl list | grep -i fileindexer
-   and use whatever label it prints.)
+    kendex          # shell alias for:  open -a Kendex
+  (or just open Kendex.app from /Applications.)
 
 
 ------------------------------------------------------------
