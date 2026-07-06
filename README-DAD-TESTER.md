@@ -5,13 +5,11 @@ the app and opens the Kendex interface in a native window.
 
 ## Before Opening
 
-Install the required command-line dependencies once:
+Nothing to install. The app bundles its own Python, DuckDB, and libmagic, so it
+runs on a clean Mac with nothing set up first.
 
-```bash
-brew install uv libmagic
-```
-
-Optional, for richer photo/video metadata:
+Optional — only if you want photo/video EXIF metadata (the app works fine
+without it, it just skips EXIF):
 
 ```bash
 brew install exiftool
@@ -43,8 +41,7 @@ xattr -cr /Applications/Kendex.app
 ## First Run
 
 The app uses its own database under your macOS Application Support folder.
-On first launch, `uv` creates a private Python environment there for the backend.
-Click **Scan for new** to create the first index. The first scan can take hours
+Click **Add Files** to create the first index. The first scan can take hours
 on a large machine or external drives.
 
 Use **Edit exclude list** before scanning to skip drives or folders you do not
@@ -55,7 +52,7 @@ rows from the existing index, then run **Compact DB** to shrink the database.
 
 ## Use an Existing Database (skip the first scan)
 
-If you already have a `files.db` from the browser-based indexer, you can reuse
+If you already have a `files.db` from an earlier Kendex install, you can reuse
 a copy of it instead of waiting hours for a first scan:
 
 1. Open Kendex once, then choose **File → Open App Data Folder**.
