@@ -1396,6 +1396,17 @@ if __name__ == "__main__":
 
     if args.db:
         DB_PATH = Path(args.db)
+        # The sidecar configs live next to the DB, but they — and everything
+        # derived from them — were computed at import time from the DEFAULT
+        # DB_PATH (env/hardcoded). Repoint and reload so a --db run honors the
+        # target folder's exclude/include lists; without this, a run launched
+        # after the web UI's DB-folder switch would silently use the default
+        # folder's sidecars. (Same folder in the normal WORK_DB case: no-op.)
+        EXCLUDE_CONFIG = DB_PATH.parent / "exclude_paths.json"
+        INCLUDE_CONFIG = DB_PATH.parent / "include_config.json"
+        EXCLUDE_PATHS = EXCLUDE_DEFAULTS | load_user_excludes()
+        _EXCLUDE_LITERALS, _EXCLUDE_GLOBS = _split_excludes(EXCLUDE_PATHS)
+        INCLUDE_EXTENSIONS = effective_includes()
 
     if args.prune:
         prune()

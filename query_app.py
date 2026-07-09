@@ -237,14 +237,20 @@ def _apply_db(path):
     """Point the server (and the crawler's config) at a different files.db,
     rebuilding every path derived from it. Caller reopens the connection. The
     crawler subprocesses still get an explicit --db, so this only governs the
-    parent process: the query connection, stats/state sidecars, the exclude
-    config location, and the COMMANDS --db targets."""
+    parent process: the query connection, stats/state sidecars, the exclude and
+    include config locations, and the COMMANDS --db targets."""
     global DB_PATH, WORK_DB, STATE_PATH, COMMANDS
     DB_PATH = path
     WORK_DB = path + ".scan"
     STATE_PATH = path + ".state.json"
     crawler.DB_PATH = Path(path)
     crawler.EXCLUDE_CONFIG = crawler.DB_PATH.parent / "exclude_paths.json"
+    crawler.INCLUDE_CONFIG = crawler.DB_PATH.parent / "include_config.json"
+    # should_skip (the volume picker uses it to omit excluded volumes) reads
+    # sets derived at import; rebuild them from the new folder's exclude list.
+    crawler.EXCLUDE_PATHS = crawler.EXCLUDE_DEFAULTS | crawler.load_user_excludes()
+    crawler._EXCLUDE_LITERALS, crawler._EXCLUDE_GLOBS = (
+        crawler._split_excludes(crawler.EXCLUDE_PATHS))
     COMMANDS = _build_commands()
 
 
@@ -1772,7 +1778,7 @@ PAGE = """<!doctype html>
     <input id="loc-ext" size="14" placeholder="ext: jpg, png">
     <label>created <input id="loc-from" type="date"> &ndash;
       <input id="loc-to" type="date"></label>
-    <span class="utc-note" title="Stored in UTC, displayed in this machine's local time zone (Pacific)">times shown in local time</span>
+    <span class="utc-note" title="Stored in UTC, compared and displayed in this machine's local time zone">times shown in local time</span>
     <select id="loc-volmode">
       <option value="in">volume is</option>
       <option value="notin">volume is not</option>
@@ -2201,9 +2207,10 @@ function locate() {
   if (exts.length)
     conds.push('extension IN (' + exts.map(sqlStr).join(', ') + ')');
   // created_at is stored naive-UTC; convert to local wall-clock before comparing
-  // so "created June 8" means the local day, not the UTC day (DST handled by the
-  // named zone). Display in the results table is localized the same way server-side.
-  const createdLocal = "timezone('America/Los_Angeles', timezone('UTC', created_at))";
+  // so "created June 8" means the local day, not the UTC day. DuckDB's TimeZone
+  // setting defaults to this machine's zone, so no zone name is hardcoded (DST
+  // handled). Display in the results table is localized the same way server-side.
+  const createdLocal = "timezone(current_setting('TimeZone'), timezone('UTC', created_at))";
   if (locFrom.value)
     conds.push(createdLocal + ' >= DATE ' + sqlStr(locFrom.value));
   if (locTo.value)  // end date inclusive
