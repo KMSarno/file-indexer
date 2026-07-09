@@ -23,6 +23,7 @@ import socket
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
+from stat import S_ISREG
 
 import duckdb
 
@@ -887,7 +888,11 @@ def crawl(do_hash: bool = True, hash_only: bool = False, dupes_only: bool = Fals
                                           or ext in INCLUDE_EXTENSIONS)
                         # stat_only: a pure metadata sweep — no content reads at
                         # all, for any file. The fast first pass.
-                        read_content = not stat_only and not is_dataless
+                        # Only regular files are readable: opening a FIFO blocks
+                        # forever (python-magic opens the file for MIME), and
+                        # device/socket files can't be meaningfully sniffed.
+                        read_content = (not stat_only and not is_dataless
+                                        and S_ISREG(stat.st_mode))
 
                         mime = None
                         if read_content and not is_symlink:
@@ -1223,8 +1228,10 @@ def reindex_changed(do_hash: bool = True):
     >=1s (second granularity avoids false positives from sub-second float
     jitter in stat timestamps round-tripping through DuckDB's TIMESTAMP type).
     Changed rows get fully re-extracted metadata (size, md5, mime, stat fields,
-    EXIF). Same mount-guard as --prune: paths on unmounted volumes are skipped.
-    Missing files are left for --prune to remove, not deleted here.
+    EXIF). Dataless iCloud placeholders and non-regular files are refreshed from
+    metadata alone (mime/md5/exif become NULL) — never content-read, matching
+    the full crawl. Same mount-guard as --prune: paths on unmounted volumes are
+    skipped. Missing files are left for --prune to remove, not deleted here.
     """
     print(f"\n{'='*60}")
     print(f"  Reindex-changed mode — refreshing modified files")
@@ -1233,6 +1240,9 @@ def reindex_changed(do_hash: bool = True):
     print(f"{'='*60}\n")
 
     con = duckdb.connect(str(DB_PATH))
+    # Ensure the schema is current — the UPDATE below writes is_dataless, which
+    # a DB predating that column only gets via the MIGRATIONS. Idempotent.
+    init_db(con)
     rows = con.execute(
         "SELECT id, path, size_bytes, modified_at FROM files"
     ).fetchall()
@@ -1243,6 +1253,7 @@ def reindex_changed(do_hash: bool = True):
     UPDATE_SQL = """
         UPDATE files SET
             size_bytes = ?, md5 = ?, mime_type = ?, is_symlink = ?,
+            is_dataless = ?,
             inode = ?, hard_link_count = ?,
             created_at = ?, modified_at = ?, accessed_at = ?, indexed_at = ?,
             exif_camera_make = ?, exif_camera_model = ?, exif_shoot_date = ?,
@@ -1296,21 +1307,28 @@ def reindex_changed(do_hash: bool = True):
                 is_symlink = file_path.is_symlink()
                 size = stat.st_size
                 ext = file_path.suffix.lower()
+                # Same content-read gate as the full crawl: a dataless iCloud
+                # placeholder must never be downloaded (in any mode), and only
+                # regular files are safe to read (a FIFO blocks open() forever).
+                is_dataless = bool(getattr(stat, "st_flags", 0) & SF_DATALESS)
+                read_content = (not is_dataless and not is_symlink
+                                and S_ISREG(stat.st_mode))
 
-                mime = get_mime(file_path) if not is_symlink else None
+                mime = get_mime(file_path) if read_content else None
                 md5 = None
-                if do_hash and not is_symlink and size > 0:
+                if read_content and do_hash and size > 0:
                     md5 = md5_file(file_path)
 
                 exif = {}
                 if (
-                    EXIFTOOL_AVAILABLE and et_ctx and not is_symlink
+                    read_content and EXIFTOOL_AVAILABLE and et_ctx
                     and ext in EXIF_EXTENSIONS and size > 0
                 ):
                     exif = get_exif(et_ctx, path_str)
 
                 con.execute(UPDATE_SQL, [
                     size, md5, mime, is_symlink,
+                    is_dataless,
                     stat.st_ino, stat.st_nlink,
                     ts_to_dt(stat.st_birthtime if hasattr(stat, "st_birthtime") else stat.st_ctime),
                     ts_to_dt(stat.st_mtime),
