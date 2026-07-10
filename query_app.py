@@ -45,6 +45,7 @@ DB_PATH = str(crawler.DB_PATH)  # reuse the crawler's path so the two can't drif
 WORK_DB = DB_PATH + ".scan"  # working copy the crawler writes to during a run
 STATE_PATH = DB_PATH + ".state.json"  # Kendex sidecar metadata (initial-scan flag)
 MAX_ROWS = 2000  # cap returned rows so the browser never chokes on 2.5M rows
+MAX_POST_BYTES = 8 * 1024 * 1024  # biggest legit POST is /api/trash's path list
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_PATH = os.path.join(BASE_DIR, "webapp_run.log")
@@ -352,7 +353,7 @@ def start_run(mode: str, roots=None) -> dict:
             return {"error": f"a task is already running: {_run['mode']}"}
         _run.update(active=True, mode=mode, exit_code=None, phase="preparing",
                     pid=None, halt_requested=False, command=command, roots=roots)
-    threading.Thread(target=_run_worker, args=(mode,), daemon=True).start()
+    threading.Thread(target=_run_worker_safe, args=(mode,), daemon=True).start()
     return {"ok": True, "mode": mode}
 
 
@@ -473,6 +474,7 @@ def _run_worker(mode):
     with _run_lock:
         halted = _run["halt_requested"]
 
+    swap_failed = False
     if halted or code != 0:
         _discard_work()
         why = "Halted by user" if halted else f"Crawler exited {code}"
@@ -493,6 +495,7 @@ def _run_worker(mode):
                 log.write("\n[committed] working copy swapped into files.db; "
                           "previous DB removed.\n")
             except Exception as e:
+                swap_failed = True
                 log.write(f"\n[error] swap failed: {e}; copy left at {WORK_DB}\n")
             try:
                 _con = duckdb.connect(DB_PATH, read_only=True)
@@ -501,8 +504,37 @@ def _run_worker(mode):
 
     log.close()
     with _run_lock:
-        _run.update(active=False, exit_code=code, phase="done", pid=None,
+        # A failed swap means files.db was NOT updated even though the crawler
+        # exited 0 — surface it as an error, never a quiet "done"/committed.
+        _run.update(active=False, exit_code=code,
+                    phase="error" if swap_failed else "done", pid=None,
                     halt_requested=False)
+
+
+def _run_worker_safe(mode):
+    """_run_worker with a guaranteed landing: an unexpected exception anywhere
+    in the worker (unwritable log file, fork failure) would otherwise kill the
+    thread with _run['active'] stuck true — blocking every future run until a
+    restart — and, in direct-add mode, the query connection left closed."""
+    global _con
+    try:
+        _run_worker(mode)
+    except Exception as e:
+        try:
+            with open(LOG_PATH, "a") as f:
+                f.write(f"\n[error] maintenance worker crashed: "
+                        f"{type(e).__name__}: {e}\n")
+        except OSError:
+            pass
+        with _lock:
+            if _con is None:
+                try:
+                    _con = duckdb.connect(DB_PATH, read_only=True)
+                except Exception:
+                    _con = None
+        with _run_lock:
+            _run.update(active=False, exit_code=None, phase="error", pid=None,
+                        halt_requested=False)
 
 
 def halt_run() -> dict:
@@ -2484,11 +2516,15 @@ async function poll() {
     } else {
       setBusy(false);
       clearInterval(polling); polling = null;
-      const out_ = isDirect(s.mode)
+      // phase "error" = the run itself broke (snapshot or final swap failed,
+      // worker crashed): files.db was NOT updated even if the crawler exited 0.
+      const out_ = s.phase === 'error'
+        ? 'FAILED — see the log'
+        : isDirect(s.mode)
         ? ((s.exit_code === 0) ? 'finished, changes saved' : 'stopped, progress kept')
         : ((s.exit_code === 0) ? 'committed' : 'discarded');
       status.textContent = 'Maintenance finished — ' + out_
-        + ' (exit ' + s.exit_code + ').';
+        + (s.exit_code == null ? '' : ' (exit ' + s.exit_code + ')') + '.';
       haltBtn.textContent = '\\u25A0 Halt & discard run';   // reset to default
       loadStats();  // a committed run changes counts and the sync time
     }
@@ -3148,7 +3184,14 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if self._reject_if_unsafe(post=True):
             return
-        length = int(self.headers.get("Content-Length", 0))
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+        except ValueError:  # malformed header must not escape the handler
+            self._send(400, json.dumps({"error": "bad request"}))
+            return
+        if not 0 <= length <= MAX_POST_BYTES:
+            self._send(413, json.dumps({"error": "request body too large"}))
+            return
         try:
             payload = json.loads(self.rfile.read(length) or b"{}")
         except Exception:
