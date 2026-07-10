@@ -25,6 +25,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -133,6 +134,13 @@ def save_user_excludes(paths) -> dict:
         _write_json_atomic(crawler.EXCLUDE_CONFIG, clean)
     except OSError as e:
         return {"error": f"could not save: {e}"}
+    # Refresh this process's in-memory copy too (each crawler run re-reads the
+    # JSON on its own, but list_volumes' should_skip uses these sets — without
+    # this, excluding a whole volume wouldn't hide it from the Add Files picker
+    # until an app restart).
+    crawler.EXCLUDE_PATHS = crawler.EXCLUDE_DEFAULTS | crawler.load_user_excludes()
+    crawler._EXCLUDE_LITERALS, crawler._EXCLUDE_GLOBS = (
+        crawler._split_excludes(crawler.EXCLUDE_PATHS))
     return {"defaults": sorted(crawler.EXCLUDE_DEFAULTS), "user": clean}
 
 
@@ -369,6 +377,28 @@ def start_run(mode: str, roots=None) -> dict:
     return {"ok": True, "mode": mode}
 
 
+def _reap_group(pgid, grace=30.0):
+    """Wait for a run's process group to fully die; SIGKILL it if it doesn't.
+
+    proc.wait() only reaps the `sh -c` wrapper. The crawler itself is in the
+    same group but can outlive the shell after a SIGTERM — in the worst case
+    wedged inside a C call (DuckDB, libmagic) where Python's signal handler
+    never runs — still holding the DuckDB lock. `pgid` is the Popen pid: with
+    start_new_session=True the shell is the group leader, so its pid IS the
+    group id, valid even after the shell itself is gone."""
+    deadline = time.monotonic() + grace
+    while time.monotonic() < deadline:
+        try:
+            os.killpg(pgid, 0)          # raises when no group members remain
+        except (ProcessLookupError, PermissionError):
+            return
+        time.sleep(0.2)
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
 def _run_worker(mode):
     """Build WORK_DB (snapshot+crawler, or compact) → swap on success / discard on halt."""
     global _con
@@ -401,8 +431,20 @@ def _run_worker(mode):
         )
         with _run_lock:
             _run.update(pid=proc.pid, phase="running")
+            missed_halt = _run["halt_requested"]
+        if missed_halt:
+            # A halt (button or app-quit) that landed before the pid was
+            # published had nothing to signal — deliver it now.
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                pass
         code = proc.wait()
         log.flush()
+        # The shell's exit doesn't guarantee the crawler is gone (see
+        # _reap_group); it must be before the read-only connection reopens,
+        # or a straggler still holds the DuckDB lock.
+        _reap_group(proc.pid)
         with _run_lock:
             halted = _run["halt_requested"]
         if halted:
@@ -480,8 +522,19 @@ def _run_worker(mode):
     )
     with _run_lock:
         _run.update(pid=proc.pid, phase="running")
+        missed_halt = _run["halt_requested"]
+    if missed_halt:
+        # A halt (button or app-quit) that landed before the pid was
+        # published had nothing to signal — deliver it now.
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
     code = proc.wait()
     log.flush()
+    # As in the direct path: the working copy must not be discarded or swapped
+    # in while a straggler from the run's group is still writing it.
+    _reap_group(proc.pid)
 
     with _run_lock:
         halted = _run["halt_requested"]
@@ -559,10 +612,45 @@ def halt_run() -> dict:
         _run["phase"] = "halting"
     if pid:
         try:
-            os.killpg(os.getpgid(pid), signal.SIGTERM)  # whole process group
+            # pid is the group id (start_new_session): valid for killpg even
+            # if the sh -c wrapper already exited while the crawler lives on.
+            os.killpg(pid, signal.SIGTERM)  # whole process group
         except (ProcessLookupError, PermissionError):
             pass
     return {"ok": True}
+
+
+def _halt_for_shutdown(grace: float = 45.0):
+    """Stop any in-flight maintenance run before the server exits, so the
+    crawler never outlives the app. The crawler is launched with
+    start_new_session=True (so the Halt button's killpg can reach it), which
+    also means it does NOT die with this process — quitting the Electron app
+    mid-run used to orphan it, still holding the DuckDB write lock and jamming
+    the next session. Same halt as the button (SIGTERM the group → the crawler
+    takes its graceful flush/commit/close path), then wait for the worker
+    thread, whose _reap_group escalates to SIGKILL if anything hangs on."""
+    with _run_lock:
+        if not _run["active"]:
+            return
+        pid = _run["pid"]
+        _run["halt_requested"] = True
+        _run["phase"] = "halting"
+    if pid:
+        try:
+            os.killpg(pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
+    # Wait for the worker thread to land: it reaps the process group (with
+    # SIGKILL escalation) and finishes its cleanup — discard/keep, the
+    # [stopped]/[discarded] log line, clearing _run. It's a daemon thread, so
+    # cap the wait; a leftover WORK_DB is cleared by the next run anyway.
+    print("waiting for the crawler to stop cleanly...", flush=True)
+    deadline = time.monotonic() + grace
+    while time.monotonic() < deadline:
+        with _run_lock:
+            if not _run["active"]:
+                break
+        time.sleep(0.1)
 
 
 def run_status() -> dict:
@@ -3253,9 +3341,40 @@ def main():
     url = f"http://{args.host}:{args.port}"
     print(f"Kendex UI → {url}   (DB: {DB_PATH}, read-only)", flush=True)
     print("Ctrl-C to stop.", flush=True)
+
+    def _sigterm_to_interrupt(signum, frame):
+        # The Electron wrapper SIGTERMs this backend on app quit. Route it
+        # through the KeyboardInterrupt path below so a running crawler is
+        # halted rather than orphaned. Disarm first: a repeat of the signal
+        # would otherwise re-raise inside the shutdown cleanup and skip it.
+        signal.signal(signum, signal.SIG_IGN)
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, _sigterm_to_interrupt)
+    # A closed dev terminal sends SIGHUP; give it the same graceful path.
+    # Don't override an inherited "ignore" (that's how nohup works).
+    if signal.getsignal(signal.SIGHUP) != signal.SIG_IGN:
+        signal.signal(signal.SIGHUP, _sigterm_to_interrupt)
+
+    if os.environ.get("KENDEX_WATCH_PARENT") == "1":
+        # Force-quit (⌥⌘-Esc) SIGKILLs the Electron wrapper: no before-quit
+        # hook runs, so no SIGTERM ever reaches us and both this backend and
+        # any running crawler would be orphaned. Watch for the parent dying
+        # (we get reparented to pid 1) and take the same shutdown path. Set
+        # only by the wrapper — for a hand-run dev server the parent shell
+        # exiting is routine.
+        def _watch_parent():
+            while os.getppid() != 1:
+                time.sleep(2.0)
+            print("parent app is gone — shutting down", flush=True)
+            _halt_for_shutdown()
+            os._exit(0)
+
+        threading.Thread(target=_watch_parent, daemon=True).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
+        _halt_for_shutdown()
         print("\nbye")
 
 

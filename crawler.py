@@ -499,12 +499,30 @@ def make_readout(pbar, heartbeat: float = 2.5):
     return show
 
 
+# Set (never raised from) by the SIGTERM handler installed in __main__. Raising
+# KeyboardInterrupt from inside a signal handler can land while the main thread
+# is deep in a C call (a DuckDB insert, libmagic's magic_file), which wedges the
+# process — spinning, un-interruptable, holding the DB lock — instead of
+# stopping it. So the handler only sets this flag, and the long loops call
+# check_halt() at file/row/chunk boundaries, where the raise happens in pure
+# Python and the graceful KeyboardInterrupt cleanup (flush, commit, close) is
+# safe to run.
+_halt_requested = False
+
+
+def check_halt():
+    """Raise KeyboardInterrupt at a safe point if SIGTERM has been received."""
+    if _halt_requested:
+        raise KeyboardInterrupt
+
+
 def md5_file(path: Path) -> str | None:
     """Compute MD5 of a file. Returns None on any read error."""
     h = hashlib.md5()
     try:
         with open(path, "rb") as f:
             for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                check_halt()  # so a halt doesn't wait out a huge file's hash
                 h.update(chunk)
         return h.hexdigest()
     except (PermissionError, OSError):
@@ -683,6 +701,7 @@ def crawl(do_hash: bool = True, hash_only: bool = False, dupes_only: bool = Fals
         readout = make_readout(pbar)
         try:
             for row_id, path_str in pbar:
+                check_halt()
                 t0 = time.monotonic()
                 h = md5_file(Path(path_str))
                 if h:
@@ -826,6 +845,7 @@ def crawl(do_hash: bool = True, hash_only: bool = False, dupes_only: bool = Fals
             prune_volumes = selective and root == Path("/")
 
             for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+                check_halt()
                 dir_path = Path(dirpath)
 
                 if should_skip(dir_path, skip_dirs):
@@ -849,6 +869,7 @@ def crawl(do_hash: bool = True, hash_only: bool = False, dupes_only: bool = Fals
                     pbar.set_description_str(f"Indexing [{dir_volume}]")
 
                 for filename in filenames:
+                    check_halt()
                     file_path = dir_path / filename
                     pbar.update(1)
 
@@ -1078,6 +1099,7 @@ def prune():
     offline_roots = set()
 
     for row_id, path_str in tqdm(rows, unit="file", desc="Verifying"):
+        check_halt()
         root = volume_root(path_str)
         if not is_mounted(root):
             skipped_offline += 1
@@ -1284,6 +1306,7 @@ def reindex_changed(do_hash: bool = True):
 
     try:
         for row_id, path_str, old_size, old_mtime in pbar:
+            check_halt()
             readout(path_str)  # heartbeat for the fast skip/unchanged stretches
             if not is_mounted(volume_root(path_str)):
                 skipped_offline += 1
@@ -1404,19 +1427,20 @@ if __name__ == "__main__":
     parser.add_argument("--db", help="Operate on this DB file instead of the default (used by the web UI to run against a disposable copy)")
     args = parser.parse_args()
 
-    # The web UI's Halt button SIGTERMs this process group. Translate SIGTERM
-    # into KeyboardInterrupt so every mode takes its graceful-interrupt path —
-    # flush the pending batch, commit, close the DB cleanly — instead of dying
-    # mid-write (which dropped up to a batch of walked files and skipped the
-    # clean DuckDB close). Ctrl-C and Halt now behave identically.
-    def _sigterm_to_interrupt(signum, frame):
-        # Disarm first: a second SIGTERM (the UI's Halt clicked twice) would
-        # otherwise raise INSIDE the graceful-cleanup handler and skip the
-        # batch flush the first one started.
-        signal.signal(signal.SIGTERM, signal.SIG_IGN)
-        raise KeyboardInterrupt
+    # The web UI's Halt button (and the app's quit) SIGTERMs this process
+    # group. The handler only sets a flag; the long loops turn it into a
+    # KeyboardInterrupt at their next file/row boundary via check_halt(), so
+    # every mode takes its graceful-interrupt path — flush the pending batch,
+    # commit, close the DB cleanly. Raising directly from the handler (the
+    # previous design) could land while the main thread was inside a DuckDB or
+    # libmagic C call and wedge the process — spinning forever, holding the DB
+    # lock — instead of stopping it. Setting a flag is also naturally immune to
+    # repeated SIGTERMs (a double Halt just sets it again).
+    def _sigterm_to_halt_flag(signum, frame):
+        global _halt_requested
+        _halt_requested = True
 
-    signal.signal(signal.SIGTERM, _sigterm_to_interrupt)
+    signal.signal(signal.SIGTERM, _sigterm_to_halt_flag)
 
     if args.db:
         DB_PATH = Path(args.db)

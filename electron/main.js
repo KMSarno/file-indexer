@@ -263,6 +263,11 @@ async function startBackend() {
       ...process.env,
       FILE_INDEXER_DB: dbPath,
       KENDEX_VERSION: app.getVersion(),  // shown in the page header (no package.json in backend/)
+      // A force-quit SIGKILLs this wrapper — no before-quit, no SIGTERM to the
+      // backend. With this set, the backend watches for its parent dying and
+      // shuts itself (and any running crawler) down. Not set for hand-run dev
+      // servers, whose parent (a shell) exiting is routine.
+      KENDEX_WATCH_PARENT: '1',
       PYTHONPATH: rt.sitePackages,
       PYTHONDONTWRITEBYTECODE: '1',
       // Pin python-magic to the BUNDLED libmagic + database. KENDEX_LIBMAGIC is a
@@ -282,6 +287,7 @@ async function startBackend() {
       ...process.env,
       FILE_INDEXER_DB: dbPath,
       KENDEX_VERSION: app.getVersion(),  // shown in the page header (no package.json in backend/)
+      KENDEX_WATCH_PARENT: '1',          // see the packaged branch above
       UV_CACHE_DIR: path.join(uvStateDir, 'cache'),
       UV_PROJECT_ENVIRONMENT: path.join(uvStateDir, 'venv'),
       PATH: [
