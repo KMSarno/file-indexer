@@ -19,6 +19,7 @@ import hashlib
 import argparse
 import json
 import re
+import signal
 import socket
 import shutil
 from datetime import datetime, timezone
@@ -680,15 +681,24 @@ def crawl(do_hash: bool = True, hash_only: bool = False, dupes_only: bool = Fals
         hashed = set()                      # md5s computed this run, for the report
         pbar = tqdm(rows, unit="file", desc="Hashing")
         readout = make_readout(pbar)
-        for row_id, path_str in pbar:
-            t0 = time.monotonic()
-            h = md5_file(Path(path_str))
-            if h:
-                con.execute("UPDATE files SET md5 = ? WHERE id = ?", [h, row_id])
-                hashed.add(h)
-            else:
-                errors += 1
-            readout(path_str, time.monotonic() - t0)
+        try:
+            for row_id, path_str in pbar:
+                t0 = time.monotonic()
+                h = md5_file(Path(path_str))
+                if h:
+                    con.execute("UPDATE files SET md5 = ? WHERE id = ?", [h, row_id])
+                    hashed.add(h)
+                else:
+                    errors += 1
+                readout(path_str, time.monotonic() - t0)
+        except KeyboardInterrupt:
+            # Halt/Ctrl-C mid-hash: keep the hashes computed so far and fall
+            # through to the clean commit/close below (no stale WAL). A re-run
+            # resumes automatically — candidates are md5 IS NULL rows.
+            tqdm.write("\n\n  Interrupted -- committing hashes so far...",
+                       file=sys.stderr)
+        finally:
+            pbar.close()
         con.commit()
 
         # Report how many duplicate sets this run logged -- md5 groups (>1 copy)
@@ -1393,6 +1403,20 @@ if __name__ == "__main__":
     parser.add_argument("--roots", nargs="+", metavar="PATH", help="Restrict the crawl to these root paths (selective per-volume scan, e.g. / or /Volumes/NAME); default is all of CRAWL_ROOTS")
     parser.add_argument("--db", help="Operate on this DB file instead of the default (used by the web UI to run against a disposable copy)")
     args = parser.parse_args()
+
+    # The web UI's Halt button SIGTERMs this process group. Translate SIGTERM
+    # into KeyboardInterrupt so every mode takes its graceful-interrupt path —
+    # flush the pending batch, commit, close the DB cleanly — instead of dying
+    # mid-write (which dropped up to a batch of walked files and skipped the
+    # clean DuckDB close). Ctrl-C and Halt now behave identically.
+    def _sigterm_to_interrupt(signum, frame):
+        # Disarm first: a second SIGTERM (the UI's Halt clicked twice) would
+        # otherwise raise INSIDE the graceful-cleanup handler and skip the
+        # batch flush the first one started.
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, _sigterm_to_interrupt)
 
     if args.db:
         DB_PATH = Path(args.db)

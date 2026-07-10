@@ -58,6 +58,20 @@ DB_POINTER_PATH = os.path.join(BASE_DIR, "db_pointer.json")
 _DEFAULT_DB = str(crawler.DB_PATH)
 
 
+def _write_json_atomic(path, obj):
+    """Write JSON via a same-directory temp file + os.replace, so a crash
+    mid-write can never leave truncated JSON behind. That matters most for the
+    exclude list: its loader treats garbage as "no user excludes", which would
+    silently re-enable crawling everything the user excluded."""
+    path = str(path)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(obj, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
 def _read_db_pointer():
     """The sticky DB path if the pointer file selects an existing files.db, else
     None (missing/garbage/offline-volume all fall back to the default)."""
@@ -116,8 +130,7 @@ def save_user_excludes(paths) -> dict:
         # EXCLUDE_CONFIG lives next to the DB (persistent, survives app updates);
         # ensure its dir exists before writing.
         crawler.EXCLUDE_CONFIG.parent.mkdir(parents=True, exist_ok=True)
-        with open(crawler.EXCLUDE_CONFIG, "w") as f:
-            json.dump(clean, f, indent=2)
+        _write_json_atomic(crawler.EXCLUDE_CONFIG, clean)
     except OSError as e:
         return {"error": f"could not save: {e}"}
     return {"defaults": sorted(crawler.EXCLUDE_DEFAULTS), "user": clean}
@@ -150,8 +163,8 @@ def save_user_includes(disabled, added) -> dict:
     clean_add = [e for e in clean_add if e not in crawler.INCLUDE_DEFAULTS]
     try:
         crawler.INCLUDE_CONFIG.parent.mkdir(parents=True, exist_ok=True)
-        with open(crawler.INCLUDE_CONFIG, "w") as f:
-            json.dump({"disabled": clean_dis, "added": clean_add}, f, indent=2)
+        _write_json_atomic(crawler.INCLUDE_CONFIG,
+                           {"disabled": clean_dis, "added": clean_add})
     except OSError as e:
         return {"error": f"could not save: {e}"}
     return get_includes()
@@ -298,8 +311,7 @@ def set_db(folder=None, reset=False) -> dict:
         if reset:
             _rm(DB_POINTER_PATH)
         else:
-            with open(DB_POINTER_PATH, "w") as f:
-                json.dump({"db": target}, f)
+            _write_json_atomic(DB_POINTER_PATH, {"db": target})
     except OSError as e:
         return {"ok": True, "current": DB_PATH, "default": _DEFAULT_DB,
                 "sticky": False, "warn": f"switched, but couldn't persist: {e}"}
@@ -815,8 +827,7 @@ def initial_scan_done() -> bool:
 
 def _mark_initial_complete():
     try:
-        with open(STATE_PATH, "w") as f:
-            json.dump({"initial_scan_complete": True}, f)
+        _write_json_atomic(STATE_PATH, {"initial_scan_complete": True})
     except OSError:
         pass
 
