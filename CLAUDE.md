@@ -23,9 +23,14 @@ uv run compact_db.py SRC DST         # rewrite a DB into a fresh file, reclaimin
 uv run query_app.py                  # run the backend/query UI standalone for dev (http://127.0.0.1:8800); normally the Electron app launches it
 uv run query_app.py --port 9000      # serve on a different port
 uv run query_app.py --host 0.0.0.0   # bind a different interface (default 127.0.0.1; keep loopback)
+./kendex_maintain.sh                 # unattended maintenance cycle (add/hash-dupes/prune/compact); normally run by cron — see below
 ```
 
 There is no test suite, linter config, or build step. The Python entry point is `crawler.py`; the query UI is `query_app.py`.
+
+### Unattended maintenance (`kendex_maintain.sh`)
+
+`kendex_maintain.sh` runs the UI's manual maintenance routine headless against the **live** DB (`/Volumes/TB5_DOCK8/KMSDB_PROJ/files.db` — paths, target volumes, and the `uv` location are hardcoded at the top of the script): `crawler.py --no-hash --roots <mounted targets>` (add new files) → `--hash-dupes` (DB-wide) → `--prune` → `compact_db.py` to `files.db.compacting` + atomic `mv` swap. Because it writes the live DB directly (no copy-on-write like the UI), it refuses to start while anything else holds it: if `query_app.py` is running (`pgrep`) or a probe `duckdb.connect()` can't take the write lock, the run is **skipped** (status `OK skipped`) and the next scheduled run retries; the lock probe doubles as WAL recovery after a crash. Unmounted target volumes are logged and skipped, not fatal. It is scheduled from the **KMSCron** project's crontab (`/Volumes/TB5_DOCK8/KMSCron/crontab`, loaded via `crontab <file>`): Mon & Thu 03:00, an hour after KMSCron's 02:00 `files.db` backup so the two never overlap. Logging follows KMSCron conventions — `KMSCron/logs/kendex-maintain.log` (truncated to 5,000 lines per run; tqdm writes a line per refresh to a file) and an `OK`/`FAIL` status file under `~/Library/Application Support/KMSCron/status/` (informational only: KMSCron's morning `check-backups.sh` watches only `backup.sh` jobs, so the twice-weekly cadence can't raise false "stale" alerts).
 
 The app ships as an **Electron desktop wrapper** (`electron/`, `package.json`, `npm` deps) that packages the backend as `Kendex.app` — the only supported front-end. It is a thin convenience layer: it picks a free port, spawns `query_app.py --host 127.0.0.1 --port <port>`, and loads that loopback URL in a Chromium window — so the native window renders the *exact same page* `query_app.py` serves. See the Electron wrapper section below. (`query_app.py` can still be run by hand from a source checkout for development; there is no longer a LaunchAgent/browser-tab deployment.)
 
