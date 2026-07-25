@@ -32,6 +32,7 @@ UV="$HOME/.local/bin/uv"
 KMSCRON="/Volumes/TB5_DOCK8/KMSCron"
 LABEL="kendex-maintain"
 LOG="$KMSCRON/logs/$LABEL.log"
+LOG_MAX_LINES=3000
 STATUS_DIR="$HOME/Library/Application Support/KMSCron/status"
 STATUS="$STATUS_DIR/$LABEL.status"
 
@@ -50,7 +51,7 @@ record_status() {
   fi
   # tqdm writes a line per refresh when its stream is a file; keep the log bounded.
   if [ -f "$LOG" ]; then
-    tail -n 5000 "$LOG" > "$LOG.tmp" && mv "$LOG.tmp" "$LOG"
+    tail -n "$LOG_MAX_LINES" "$LOG" > "$LOG.tmp" && mv "$LOG.tmp" "$LOG"
   fi
 }
 trap record_status EXIT
