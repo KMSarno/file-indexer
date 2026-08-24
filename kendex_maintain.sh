@@ -96,7 +96,7 @@ fi
 
 step() {
   say "step: $*"
-  if ! "$@" >> "$LOG" 2>&1; then
+  if ! "$@" 2>&1 | { grep -v $'\r' || true; } >> "$LOG"; then
     say "FAILED: $*"
     exit 1
   fi
