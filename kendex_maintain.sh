@@ -66,14 +66,26 @@ if pgrep -f "query_app.py" > /dev/null 2>&1; then
   exit 0
 fi
 
-cd "$REPO" || exit 1
+# Run from the boot volume, never cron's inherited cwd — an external-volume cwd
+# can be momentarily unresolvable at launch (getcwd ENOENT), which killed the
+# Jul 23/27 runs. uv is pointed at the repo with --directory instead.
+cd "$HOME" || exit 1
 
 # Probe the write lock (and replay any leftover .wal from a crash).
-if ! "$UV" run python -c \
-    "import duckdb, sys; duckdb.connect(sys.argv[1]).close()" "$DB" >> "$LOG" 2>&1; then
-  say "SKIP — could not take the DB write lock; will retry next scheduled run"
-  SKIPPED="skipped "
-  exit 0
+probe_out=$("$UV" run --directory "$REPO" python -c \
+    "import duckdb, sys; duckdb.connect(sys.argv[1]).close()" "$DB" 2>&1)
+probe_rc=$?
+if [ "$probe_rc" -ne 0 ]; then
+  printf '%s\n' "$probe_out" >> "$LOG"
+  # Only an actual lock conflict is a benign skip; anything else (e.g. uv
+  # failing to launch) is a real failure and must not be disguised as one.
+  if printf '%s' "$probe_out" | grep -qi 'lock'; then
+    say "SKIP — could not take the DB write lock; will retry next scheduled run"
+    SKIPPED="skipped "
+    exit 0
+  fi
+  say "FAILED — lock probe could not run (exit=$probe_rc); output above"
+  exit 1
 fi
 
 # --- which target volumes are actually mounted -----------------------------
@@ -102,13 +114,13 @@ step() {
   fi
 }
 
-step "$UV" run crawler.py --no-hash --roots "${roots[@]}"
-step "$UV" run crawler.py --hash-dupes
-step "$UV" run crawler.py --prune
+step "$UV" run --directory "$REPO" crawler.py --no-hash --roots "${roots[@]}"
+step "$UV" run --directory "$REPO" crawler.py --hash-dupes
+step "$UV" run --directory "$REPO" crawler.py --prune
 
 TMP="$DB.compacting"
 rm -f "$TMP" "$TMP.wal"
-step "$UV" run compact_db.py "$DB" "$TMP"
+step "$UV" run --directory "$REPO" compact_db.py "$DB" "$TMP"
 rm -f "$DB.wal"            # none expected after a clean close; never leave a
 mv -f "$TMP" "$DB"         # stale one to replay against the fresh file
 say "DONE — $(stat -f %z "$DB" | awk '{printf "%.2f GB", $1/1e9}') after compact"
